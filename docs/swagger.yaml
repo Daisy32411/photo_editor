@@ -1,0 +1,88 @@
+basePath: /
+definitions:
+  handlers.CreateTaskResponse:
+    properties:
+      task_id:
+        type: string
+    type: object
+  handlers.GetResultResponse:
+    properties:
+      result:
+        type: string
+    type: object
+  handlers.GetStatusResponse:
+    properties:
+      status:
+        type: string
+    type: object
+host: localhost:8001
+info:
+  contact: {}
+  description: HTTP API for asynchronous image processing tasks.
+  title: Photo Editor API
+  version: "1.0"
+paths:
+  /result/{id}:
+    get:
+      description: Returns the result of a completed task
+      parameters:
+      - description: Task ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Task result
+          schema:
+            $ref: '#/definitions/handlers.GetResultResponse'
+        "404":
+          description: Task not found
+          schema:
+            type: string
+        "409":
+          description: Task is not ready
+          schema:
+            type: string
+      summary: Get task result
+      tags:
+      - tasks
+  /status/{id}:
+    get:
+      description: Returns the current processing status of a task
+      parameters:
+      - description: Task ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Task status
+          schema:
+            $ref: '#/definitions/handlers.GetStatusResponse'
+        "404":
+          description: Task not found
+          schema:
+            type: string
+      summary: Get task status
+      tags:
+      - tasks
+  /task:
+    post:
+      description: Creates an asynchronous image processing task
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Task created successfully
+          schema:
+            $ref: '#/definitions/handlers.CreateTaskResponse'
+      summary: Create a new task
+      tags:
+      - tasks
+swagger: "2.0"
