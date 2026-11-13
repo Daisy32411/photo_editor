@@ -11,3 +11,7 @@ type GetStatusResponse struct {
 type GetResultResponse struct {
 	Result string `json:"result"`
 }
+
+type LoginResponse struct {
+	Token string `json:"token"`
+}

@@ -1,5 +1,12 @@
 basePath: /
 definitions:
+  handlers.AuthRequest:
+    properties:
+      password:
+        type: string
+      username:
+        type: string
+    type: object
   handlers.CreateTaskResponse:
     properties:
       task_id:
@@ -15,13 +22,82 @@ definitions:
       status:
         type: string
     type: object
+  handlers.LoginResponse:
+    properties:
+      token:
+        type: string
+    type: object
 host: localhost:8001
 info:
   contact: {}
-  description: HTTP API for asynchronous image processing tasks.
+  description: HTTP API for asynchronous image processing with session-based authentication.
   title: Photo Editor API
-  version: "1.0"
+  version: "2.0"
 paths:
+  /login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticates a user and creates a new session
+      parameters:
+      - description: User login credentials
+        in: body
+        name: credentials
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.AuthRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Authentication successful
+          schema:
+            $ref: '#/definitions/handlers.LoginResponse'
+        "400":
+          description: Invalid JSON
+          schema:
+            type: string
+        "401":
+          description: Invalid username or password
+          schema:
+            type: string
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      summary: Authenticate a user
+      tags:
+      - auth
+  /register:
+    post:
+      consumes:
+      - application/json
+      description: Registers a new user with a username and password
+      parameters:
+      - description: User registration credentials
+        in: body
+        name: credentials
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.AuthRequest'
+      responses:
+        "201":
+          description: User registered successfully (empty response body)
+        "400":
+          description: Invalid JSON or missing credentials
+          schema:
+            type: string
+        "409":
+          description: User already exists
+          schema:
+            type: string
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      summary: Register a new user
+      tags:
+      - auth
   /result/{id}:
     get:
       description: Returns the result of a completed task
@@ -38,6 +114,10 @@ paths:
           description: Task result
           schema:
             $ref: '#/definitions/handlers.GetResultResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            type: string
         "404":
           description: Task not found
           schema:
@@ -46,6 +126,8 @@ paths:
           description: Task is not ready
           schema:
             type: string
+      security:
+      - BearerAuth: []
       summary: Get task result
       tags:
       - tasks
@@ -65,10 +147,16 @@ paths:
           description: Task status
           schema:
             $ref: '#/definitions/handlers.GetStatusResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            type: string
         "404":
           description: Task not found
           schema:
             type: string
+      security:
+      - BearerAuth: []
       summary: Get task status
       tags:
       - tasks
@@ -82,7 +170,19 @@ paths:
           description: Task created successfully
           schema:
             $ref: '#/definitions/handlers.CreateTaskResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
       summary: Create a new task
       tags:
       - tasks
+securityDefinitions:
+  BearerAuth:
+    description: 'Enter your session token in the format: Bearer <token>'
+    in: header
+    name: Authorization
+    type: apiKey
 swagger: "2.0"

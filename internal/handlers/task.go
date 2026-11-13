@@ -21,7 +21,9 @@ func NewTaskHandler(service *service.TaskService) *TaskHandler {
 // @Description Creates an asynchronous image processing task
 // @Tags tasks
 // @Produce json
+// @Security BearerAuth
 // @Success 201 {object} CreateTaskResponse "Task created successfully"
+// @Failure 401 {string} string "Unauthorized"
 // @Router /task [post]
 func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	id := h.service.CreateTask()
@@ -40,8 +42,10 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 // @Description Returns the current processing status of a task
 // @Tags tasks
 // @Produce json
+// @Security BearerAuth
 // @Param id path string true "Task ID"
 // @Success 200 {object} GetStatusResponse "Task status"
+// @Failure 401 {string} string "Unauthorized"
 // @Failure 404 {string} string "Task not found"
 // @Router /status/{id} [get]
 func (h *TaskHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
@@ -65,8 +69,10 @@ func (h *TaskHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 // @Description Returns the result of a completed task
 // @Tags tasks
 // @Produce json
+// @Security BearerAuth
 // @Param id path string true "Task ID"
 // @Success 200 {object} GetResultResponse "Task result"
+// @Failure 401 {string} string "Unauthorized"
 // @Failure 404 {string} string "Task not found"
 // @Failure 409 {string} string "Task is not ready"
 // @Router /result/{id} [get]
