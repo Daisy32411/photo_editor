@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const MaxTaskMessageSize = 49 * 1024 * 1024
+const MaxTaskMessageSize = 99 * 1024 * 1024
 
 var ErrTaskTooLarge = errors.New("image task is too large")
 
