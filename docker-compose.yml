@@ -1,0 +1,58 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+    environment:
+      RABBITMQ_DEFAULT_USER: photo
+      RABBITMQ_DEFAULT_PASS: photo
+
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+
+    ports:
+      - "8001:8001"
+
+    environment:
+      RABBITMQ_URL: amqp://photo:photo@rabbitmq:5672/
+
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+  processor:
+    build:
+      context: .
+      dockerfile: Dockerfile.processor
+
+    environment:
+      RABBITMQ_URL: amqp://photo:photo@rabbitmq:5672/
+      API_URL: http://server:8001
+
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      server:
+        condition: service_started
+
+    restart: unless-stopped
+
+volumes:
+  rabbitmq_data:

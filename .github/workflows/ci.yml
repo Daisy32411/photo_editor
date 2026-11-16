@@ -1,0 +1,35 @@
+name: Go Ci
+
+on:
+    push:
+    pull_request:
+    
+permissions:
+    contents: read
+
+jobs:
+    test:
+        name: Build and Test
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v7
+
+            - name: Set up Go
+              uses: actions/setup-go@v7
+            with:
+                go-version-file: go.mod
+                cache: true
+
+            - name: Run go vet
+              run: go vet ./...
+
+            - name: Run tests
+              run: go test -v ./...
+
+            - name: Build server
+              run: go build -o /tmp/photo-server ./cmd/server
+
+            - name: Build processor
+              run: go build -o /tmp/photo-processor ./cmd/processor

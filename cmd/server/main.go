@@ -3,12 +3,15 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
+	"photo_editor/internal/broker"
 	"photo_editor/internal/handlers"
 	"photo_editor/internal/service"
 	"photo_editor/internal/storage"
 
-	httpSwagger "github.com/swaggo/http-swagger"
 	_ "photo_editor/docs"
+
+	httpSwagger "github.com/swaggo/http-swagger"
 )
 
 // @title Photo Editor API
@@ -23,7 +26,19 @@ import (
 // @description Enter your session token in the format: Bearer <token>
 func main() {
 	st := storage.NewMemoryStorage()
-	svc := service.NewTaskService(st)
+
+	rabbitURL := os.Getenv("RABBITMQ_URL")
+	if rabbitURL == "" {
+		rabbitURL = "amqp://photo:photo@localhost:5672/"
+	}
+
+	publisher, err := broker.NewRabbitMQPublisher(rabbitURL)
+	if err != nil {
+		log.Fatalf("Failed to connect to RabbitMQ: %v", err)
+	}
+	defer publisher.Close()
+
+	svc := service.NewTaskService(st, publisher)
 	hs := handlers.NewTaskHandler(svc)
 
 	authStore := storage.NewAuthMemoryStorage()
@@ -34,6 +49,7 @@ func main() {
 
 	mux.HandleFunc("POST /register", authHandler.Register)
 	mux.HandleFunc("POST /login", authHandler.Login)
+	mux.HandleFunc("POST /commit", hs.CommitResult)
 
 	mux.HandleFunc(
 		"POST /task",
@@ -51,7 +67,7 @@ func main() {
 
 	log.Println("Server started on :8001")
 
-	err := http.ListenAndServe(":8001", mux)
+	err = http.ListenAndServe(":8001", mux)
 
 	if err != nil {
 		log.Fatal(err)
