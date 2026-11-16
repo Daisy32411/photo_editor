@@ -3,4 +3,3 @@ server
 *.png
 .venv/
 __pycache__/
-test.py
