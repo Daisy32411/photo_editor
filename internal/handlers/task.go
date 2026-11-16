@@ -21,13 +21,21 @@ func NewTaskHandler(service *service.TaskService) *TaskHandler {
 }
 
 // CreateTask handles POST /task.
-// @Summary Create a new task
-// @Description Creates an asynchronous image processing task
+// @Summary Create an image processing task
+// @Description Creates an asynchronous image processing task using RabbitMQ.
+// @Description The image must be a Base64-encoded PNG.
+// @Description Supported filters: Negative, Blur, Sharpen, FlipX.
+// @Description Blur and Sharpen require parameters.sigma greater than 0 and not greater than 20.
 // @Tags tasks
+// @Accept json
 // @Produce json
 // @Security BearerAuth
-// @Success 201 {object} CreateTaskResponse "Task created successfully"
+// @Param request body CreateImageTaskRequest true "Image and filter configuration"
+// @Success 201 {object} CreateTaskResponse "Task successfully created"
+// @Failure 400 {string} string "Invalid JSON, missing image or filter"
 // @Failure 401 {string} string "Unauthorized"
+// @Failure 413 {string} string "Image task is too large"
+// @Failure 503 {string} string "Failed to publish task to RabbitMQ"
 // @Router /task [post]
 func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	var req CreateImageTaskRequest
@@ -79,13 +87,13 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetStatus handles GET /status/{id}.
-// @Summary Get task status
-// @Description Returns the current processing status of a task
+// @Summary Get image processing task status
+// @Description Returns the current task status: in_progress, ready, or failed.
 // @Tags tasks
 // @Produce json
 // @Security BearerAuth
-// @Param id path string true "Task ID"
-// @Success 200 {object} GetStatusResponse "Task status"
+// @Param id path string true "Task ID (UUID)"
+// @Success 200 {object} GetStatusResponse "Current task status"
 // @Failure 401 {string} string "Unauthorized"
 // @Failure 404 {string} string "Task not found"
 // @Router /status/{id} [get]
@@ -106,16 +114,18 @@ func (h *TaskHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetResult handles GET /result/{id}.
-// @Summary Get task result
-// @Description Returns the result of a completed task
+// @Summary Download processed image
+// @Description Returns the processed PNG image when the task status is ready.
+// @Description Returns HTTP 409 if the task is still processing or has failed.
 // @Tags tasks
-// @Produce json
+// @Produce png
 // @Security BearerAuth
-// @Param id path string true "Task ID"
-// @Success 200 {object} GetResultResponse "Task result"
+// @Param id path string true "Task ID (UUID)"
+// @Success 200 {file} file "Processed PNG image"
 // @Failure 401 {string} string "Unauthorized"
 // @Failure 404 {string} string "Task not found"
 // @Failure 409 {string} string "Task is not ready"
+// @Failure 500 {string} string "Failed to decode task result"
 // @Router /result/{id} [get]
 func (h *TaskHandler) GetResult(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -142,7 +152,18 @@ func (h *TaskHandler) GetResult(w http.ResponseWriter, r *http.Request) {
 	w.Write(imageBytes)
 }
 
-// CommitResult принимает результат обработки от ImageProcessor
+// CommitResult handles POST /commit.
+// @Summary Commit image processing result
+// @Description Internal endpoint used by ImageProcessor to report task completion.
+// @Description Status must be ready or failed.
+// @Description If status is ready, result must contain a Base64-encoded PNG.
+// @Tags internal
+// @Accept json
+// @Param request body models.CommitRequest true "Task ID, status and processing result"
+// @Success 204 "Result successfully committed"
+// @Failure 400 {string} string "Invalid request body or task status"
+// @Failure 404 {string} string "Task not found"
+// @Router /commit [post]
 func (h *TaskHandler) CommitResult(w http.ResponseWriter, r *http.Request) {
 	var req models.CommitRequest
 

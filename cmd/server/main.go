@@ -14,9 +14,9 @@ import (
 	httpSwagger "github.com/swaggo/http-swagger"
 )
 
-// @title Photo Editor API
-// @version 2.0
-// @description HTTP API for asynchronous image processing with session-based authentication.
+// @version 3.0
+// @description Asynchronous image processing API with RabbitMQ and session-based authentication.
+// @description Supported filters: Negative, Blur, Sharpen, and FlipX.
 // @host localhost:8001
 // @BasePath /
 

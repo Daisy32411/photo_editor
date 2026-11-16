@@ -15,6 +15,46 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/commit": {
+            "post": {
+                "description": "Internal endpoint used by ImageProcessor to report task completion.\nStatus must be ready or failed.\nIf status is ready, result must contain a Base64-encoded PNG.",
+                "consumes": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal"
+                ],
+                "summary": "Commit image processing result",
+                "parameters": [
+                    {
+                        "description": "Task ID, status and processing result",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/photo_editor_internal_models.CommitRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Result successfully committed"
+                    },
+                    "400": {
+                        "description": "Invalid request body or task status",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "Task not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
         "/login": {
             "post": {
                 "description": "Authenticates a user and creates a new session",
@@ -35,7 +75,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/handlers.AuthRequest"
+                            "$ref": "#/definitions/internal_handlers.AuthRequest"
                         }
                     }
                 ],
@@ -43,7 +83,7 @@ const docTemplate = `{
                     "200": {
                         "description": "Authentication successful",
                         "schema": {
-                            "$ref": "#/definitions/handlers.LoginResponse"
+                            "$ref": "#/definitions/internal_handlers.LoginResponse"
                         }
                     },
                     "400": {
@@ -84,13 +124,13 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/handlers.AuthRequest"
+                            "$ref": "#/definitions/internal_handlers.AuthRequest"
                         }
                     }
                 ],
                 "responses": {
                     "201": {
-                        "description": "User registered successfully (empty response body)"
+                        "description": "User registered successfully"
                     },
                     "400": {
                         "description": "Invalid JSON or missing credentials",
@@ -120,18 +160,18 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns the result of a completed task",
+                "description": "Returns the processed PNG image when the task status is ready.\nReturns HTTP 409 if the task is still processing or has failed.",
                 "produces": [
-                    "application/json"
+                    "image/png"
                 ],
                 "tags": [
                     "tasks"
                 ],
-                "summary": "Get task result",
+                "summary": "Download processed image",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Task ID",
+                        "description": "Task ID (UUID)",
                         "name": "id",
                         "in": "path",
                         "required": true
@@ -139,9 +179,9 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "Task result",
+                        "description": "Processed PNG image",
                         "schema": {
-                            "$ref": "#/definitions/handlers.GetResultResponse"
+                            "type": "file"
                         }
                     },
                     "401": {
@@ -161,6 +201,12 @@ const docTemplate = `{
                         "schema": {
                             "type": "string"
                         }
+                    },
+                    "500": {
+                        "description": "Failed to decode task result",
+                        "schema": {
+                            "type": "string"
+                        }
                     }
                 }
             }
@@ -172,18 +218,18 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns the current processing status of a task",
+                "description": "Returns the current task status: in_progress, ready, or failed.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "tasks"
                 ],
-                "summary": "Get task status",
+                "summary": "Get image processing task status",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Task ID",
+                        "description": "Task ID (UUID)",
                         "name": "id",
                         "in": "path",
                         "required": true
@@ -191,9 +237,9 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "Task status",
+                        "description": "Current task status",
                         "schema": {
-                            "$ref": "#/definitions/handlers.GetStatusResponse"
+                            "$ref": "#/definitions/internal_handlers.GetStatusResponse"
                         }
                     },
                     "401": {
@@ -218,23 +264,55 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates an asynchronous image processing task",
+                "description": "Creates an asynchronous image processing task using RabbitMQ.\nThe image must be a Base64-encoded PNG.\nSupported filters: Negative, Blur, Sharpen, FlipX.\nBlur and Sharpen require parameters.sigma greater than 0 and not greater than 20.",
+                "consumes": [
+                    "application/json"
+                ],
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "tasks"
                 ],
-                "summary": "Create a new task",
+                "summary": "Create an image processing task",
+                "parameters": [
+                    {
+                        "description": "Image and filter configuration",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.CreateImageTaskRequest"
+                        }
+                    }
+                ],
                 "responses": {
                     "201": {
-                        "description": "Task created successfully",
+                        "description": "Task successfully created",
                         "schema": {
-                            "$ref": "#/definitions/handlers.CreateTaskResponse"
+                            "$ref": "#/definitions/internal_handlers.CreateTaskResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid JSON, missing image or filter",
+                        "schema": {
+                            "type": "string"
                         }
                     },
                     "401": {
                         "description": "Unauthorized",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "413": {
+                        "description": "Image task is too large",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "503": {
+                        "description": "Failed to publish task to RabbitMQ",
                         "schema": {
                             "type": "string"
                         }
@@ -244,7 +322,7 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "handlers.AuthRequest": {
+        "internal_handlers.AuthRequest": {
             "type": "object",
             "properties": {
                 "password": {
@@ -255,7 +333,18 @@ const docTemplate = `{
                 }
             }
         },
-        "handlers.CreateTaskResponse": {
+        "internal_handlers.CreateImageTaskRequest": {
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "$ref": "#/definitions/photo_editor_internal_models.Filter"
+                },
+                "image": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.CreateTaskResponse": {
             "type": "object",
             "properties": {
                 "task_id": {
@@ -263,15 +352,7 @@ const docTemplate = `{
                 }
             }
         },
-        "handlers.GetResultResponse": {
-            "type": "object",
-            "properties": {
-                "result": {
-                    "type": "string"
-                }
-            }
-        },
-        "handlers.GetStatusResponse": {
+        "internal_handlers.GetStatusResponse": {
             "type": "object",
             "properties": {
                 "status": {
@@ -279,11 +360,39 @@ const docTemplate = `{
                 }
             }
         },
-        "handlers.LoginResponse": {
+        "internal_handlers.LoginResponse": {
             "type": "object",
             "properties": {
                 "token": {
                     "type": "string"
+                }
+            }
+        },
+        "photo_editor_internal_models.CommitRequest": {
+            "type": "object",
+            "properties": {
+                "result": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "task_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "photo_editor_internal_models.Filter": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "parameters": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
                 }
             }
         }
@@ -300,12 +409,12 @@ const docTemplate = `{
 
 // SwaggerInfo holds exported Swagger Info so clients can modify it
 var SwaggerInfo = &swag.Spec{
-	Version:          "2.0",
+	Version:          "3.0",
 	Host:             "localhost:8001",
 	BasePath:         "/",
 	Schemes:          []string{},
-	Title:            "Photo Editor API",
-	Description:      "HTTP API for asynchronous image processing with session-based authentication.",
+	Title:            "",
+	Description:      "Asynchronous image processing API with RabbitMQ and session-based authentication.\nSupported filters: Negative, Blur, Sharpen, and FlipX.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

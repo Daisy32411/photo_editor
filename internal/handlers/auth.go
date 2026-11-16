@@ -23,7 +23,7 @@ func NewAuthHandler(svc *service.AuthService) *AuthHandler {
 // @Tags auth
 // @Accept json
 // @Param credentials body AuthRequest true "User registration credentials"
-// @Success 201 {object} nil "User registered successfully (empty response body)"
+// @Success 201 "User registered successfully"
 // @Failure 400 {string} string "Invalid JSON or missing credentials"
 // @Failure 409 {string} string "User already exists"
 // @Failure 500 {string} string "Internal server error"
