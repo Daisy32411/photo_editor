@@ -1,3 +1,6 @@
 server
 /bin/
 *.png
+.venv/
+__pycache__/
+test.py
