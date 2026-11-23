@@ -3,7 +3,9 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"photo_editor/internal/models"
 	"photo_editor/internal/service"
 )
 
@@ -37,15 +39,19 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = h.service.Register(req.Username, req.Password)
+	err = h.service.Register(
+		r.Context(),
+		req.Username,
+		req.Password,
+	)
 	if err != nil {
 		switch {
-		case errors.Is(err, service.ErrUserExists):
+		case errors.Is(err, models.ErrUserExists):
 			http.Error(w, "User already exists", http.StatusConflict)
-
 		case errors.Is(err, service.ErrInvalidInput):
 			http.Error(w, "Username and password are required", http.StatusBadRequest)
 		default:
+			log.Printf("register: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 		}
 
@@ -76,13 +82,17 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.service.Login(req.Username, req.Password)
+	token, err := h.service.Login(
+		r.Context(),
+		req.Username,
+		req.Password,
+	)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrInvalidCredentials):
 			http.Error(w, "Invalid username or password", http.StatusUnauthorized)
-
 		default:
+			log.Printf("login: %v", err)
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
 		}
 		return

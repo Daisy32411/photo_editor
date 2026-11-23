@@ -1,9 +1,11 @@
 package service
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"photo_editor/internal/models"
 	"strings"
 
@@ -12,30 +14,42 @@ import (
 )
 
 var (
-	ErrUserExists         = errors.New("user already exists")
 	ErrInvalidCredentials = errors.New("invalid username or password")
 	ErrInvalidInput       = errors.New("username and password are required")
 )
 
 type AuthService struct {
-	storage AuthStorage
+	users    UserStorage
+	sessions SessionStorage
 }
 
-func NewAuthService(store AuthStorage) *AuthService {
+func NewAuthService(
+	users UserStorage,
+	sessions SessionStorage,
+) *AuthService {
 	return &AuthService{
-		storage: store,
+		users:    users,
+		sessions: sessions,
 	}
 }
 
-func (s *AuthService) Register(username, password string) error {
+func (s *AuthService) Register(
+	ctx context.Context,
+	username string,
+	password string,
+) error {
 	username = strings.TrimSpace(username)
+
 	if username == "" || strings.TrimSpace(password) == "" {
 		return ErrInvalidInput
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword(
+		[]byte(password),
+		bcrypt.DefaultCost,
+	)
 	if err != nil {
-		return err
+		return fmt.Errorf("hash password: %w", err)
 	}
 
 	user := models.User{
@@ -44,22 +58,34 @@ func (s *AuthService) Register(username, password string) error {
 		PasswordHash: string(hash),
 	}
 
-	saved := s.storage.SaveUser(user)
-	if !saved {
-		return ErrUserExists
+	if err := s.users.SaveUser(ctx, user); err != nil {
+		return fmt.Errorf("register user: %w", err)
 	}
 
 	return nil
 }
 
-func (s *AuthService) Login(username, password string) (string, error) {
+func (s *AuthService) Login(
+	ctx context.Context,
+	username string,
+	password string,
+) (string, error) {
 	username = strings.TrimSpace(username)
-	user, exists := s.storage.GetUserByUsername(username)
-	if !exists {
+
+	if username == "" || password == "" {
 		return "", ErrInvalidCredentials
 	}
 
-	err := bcrypt.CompareHashAndPassword(
+	user, err := s.users.GetUserByUsername(ctx, username)
+
+	if errors.Is(err, models.ErrUserNotFound) {
+		return "", ErrInvalidCredentials
+	}
+	if err != nil {
+		return "", fmt.Errorf("get login user: %w", err)
+	}
+
+	err = bcrypt.CompareHashAndPassword(
 		[]byte(user.PasswordHash),
 		[]byte(password),
 	)
@@ -70,7 +96,7 @@ func (s *AuthService) Login(username, password string) (string, error) {
 
 	token, err := generateSessionToken()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("generate session token: %w", err)
 	}
 
 	session := models.Session{
@@ -78,7 +104,9 @@ func (s *AuthService) Login(username, password string) (string, error) {
 		SessionID: token,
 	}
 
-	s.storage.SaveSession(session)
+	if err := s.sessions.SaveSession(ctx, session); err != nil {
+		return "", fmt.Errorf("save session: %w", err)
+	}
 
 	return token, nil
 }
@@ -94,6 +122,9 @@ func generateSessionToken() (string, error) {
 	return hex.EncodeToString(tokenBytes), nil
 }
 
-func (s *AuthService) ValidateSession(token string) (models.Session, bool) {
-	return s.storage.GetSession(token)
+func (s *AuthService) ValidateSession(
+	ctx context.Context,
+	token string,
+) (models.Session, error) {
+	return s.sessions.GetSession(ctx, token)
 }

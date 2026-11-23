@@ -1,13 +1,17 @@
 package service
 
-import "photo_editor/internal/models"
+import (
+	"context"
 
-type AuthStorage interface {
-	SaveUser(models.User) bool
+	"photo_editor/internal/models"
+)
 
-	GetUserByUsername(username string) (models.User, bool)
+type UserStorage interface {
+	SaveUser(ctx context.Context, user models.User) error
+	GetUserByUsername(ctx context.Context, username string) (models.User, error)
+}
 
-	SaveSession(session models.Session)
-
-	GetSession(token string) (models.Session, bool)
+type SessionStorage interface {
+	SaveSession(ctx context.Context, session models.Session) error
+	GetSession(ctx context.Context, token string) (models.Session, error)
 }

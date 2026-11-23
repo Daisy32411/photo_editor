@@ -1,11 +1,15 @@
 package service
 
-import "photo_editor/internal/models"
+import (
+	"context"
+
+	"photo_editor/internal/models"
+)
 
 type TaskStorage interface {
-	Save(task models.Task)
+	Save(ctx context.Context, task models.Task) error
 
-	Get(id string) (models.Task, bool)
+	Get(ctx context.Context, id string) (models.Task, error)
 
-	Update(task models.Task)
+	Update(ctx context.Context, task models.Task) error
 }

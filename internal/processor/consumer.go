@@ -102,10 +102,25 @@ func (c *Consumer) Run() error {
 	return nil
 }
 
-// processMessage ...
+// processMessage
 func (c *Consumer) processMessage(message models.ImageTaskMessage) error {
+	filterName := metricFilterName(message.Filter.Name)
+
+	filterUsageTotal.WithLabelValues(filterName).Inc()
+
+	started := time.Now()
+
 	result, err := processImage(message)
+
+	processingDuration.
+		WithLabelValues(filterName).
+		Observe(time.Since(started).Seconds())
+
 	if err != nil {
+		tasksTotal.
+			WithLabelValues(filterName, "failed").
+			Inc()
+
 		log.Printf("Task %s failed: %v", message.TaskID, err)
 
 		commit := models.CommitRequest{
@@ -116,6 +131,10 @@ func (c *Consumer) processMessage(message models.ImageTaskMessage) error {
 
 		return c.sendCommit(commit)
 	}
+
+	tasksTotal.
+		WithLabelValues(filterName, "success").
+		Inc()
 
 	commit := models.CommitRequest{
 		TaskID: message.TaskID,

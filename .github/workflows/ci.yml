@@ -45,7 +45,22 @@ jobs:
               
             - name: Start Docker services
               run: docker compose up --build --wait --wait-timeout 120
+
+            - name: Install sql-migrate
+              run: go install github.com/rubenv/sql-migrate/...@latest
+
+            - name: Apply database migrations
+              run: |
+                "$(go env GOPATH)/bin/sql-migrate" up -env=development
               
+            - name: Install migration tool
+              run: go install github.com/rubenv/sql-migrate/...@latest
+
+            - name: Apply database migrations
+              run: |
+                "$(go env GOPATH)/bin/sql-migrate" up
+                "$(go env GOPATH)/bin/sql-migrate" status
+
             - name: Run integration tests
               run: python -m pytest -v test.py
               

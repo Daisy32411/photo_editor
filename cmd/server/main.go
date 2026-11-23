@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 	"log"
 	"net/http"
 	"os"
@@ -8,9 +11,11 @@ import (
 	"photo_editor/internal/handlers"
 	"photo_editor/internal/service"
 	"photo_editor/internal/storage"
+	"time"
 
 	_ "photo_editor/docs"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	httpSwagger "github.com/swaggo/http-swagger"
 )
 
@@ -25,7 +30,31 @@ import (
 // @name Authorization
 // @description Enter your session token in the format: Bearer <token>
 func main() {
-	st := storage.NewMemoryStorage()
+	postgresURL := os.Getenv("POSTGRES_URL")
+
+	if postgresURL == "" {
+		postgresURL = "postgres://photo:photo@localhost:5430/photo_editor?sslmode=disable"
+	}
+
+	dbCtx, cancel := context.WithTimeout(
+		context.Background(),
+		10*time.Second,
+	)
+	defer cancel()
+
+	db, err := pgxpool.New(dbCtx, postgresURL)
+	if err != nil {
+		log.Fatalf("Failed to create PostgreSQL pool: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(dbCtx); err != nil {
+		log.Fatalf("Failed to connect to PostgreSQL: %v", err)
+	}
+
+	log.Println("Connected to PostgreSQL")
+
+	st := storage.NewPostgresTaskStorage(db)
 
 	rabbitURL := os.Getenv("RABBITMQ_URL")
 	if rabbitURL == "" {
@@ -41,12 +70,42 @@ func main() {
 	svc := service.NewTaskService(st, publisher)
 	hs := handlers.NewTaskHandler(svc)
 
-	authStore := storage.NewAuthMemoryStorage()
-	authSvc := service.NewAuthService(authStore)
+	redisAddr := os.Getenv("REDIS_ADDR")
+
+	if redisAddr == "" {
+		redisAddr = "localhost:6379"
+	}
+
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	defer redisClient.Close()
+
+	redisCtx, redisCancel := context.WithTimeout(
+		context.Background(),
+		5*time.Second,
+	)
+	defer redisCancel()
+
+	if err := redisClient.Ping(redisCtx).Err(); err != nil {
+		log.Fatalf("Failed to connect to Redis: %v", err)
+	}
+
+	log.Println("Connected to Redis")
+
+	userStorage := storage.NewPostgresUserStorage(db)
+	sessionStorage := storage.NewRedisSessionStorage(redisClient)
+
+	authSvc := service.NewAuthService(
+		userStorage,
+		sessionStorage,
+	)
+
 	authHandler := handlers.NewAuthHandler(authSvc)
 
 	mux := http.NewServeMux()
 
+	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.HandleFunc("POST /register", authHandler.Register)
 	mux.HandleFunc("POST /login", authHandler.Login)
 	mux.HandleFunc("POST /commit", hs.CommitResult)

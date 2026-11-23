@@ -2,14 +2,32 @@ package main
 
 import (
 	"log"
+	"net/http"
 	"os"
 
 	"photo_editor/internal/processor"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 func main() {
+	metricsMux := http.NewServeMux()
+
+	metricsMux.Handle(
+		"/metrics",
+		promhttp.Handler(),
+	)
+
+	go func() {
+		log.Println("Processor metrics available on :9091/metrics")
+
+		err := http.ListenAndServe(":9091", metricsMux)
+		if err != nil {
+			log.Fatalf("Metrics server failed: %v", err)
+		}
+	}()
+
 	rabbitURL := os.Getenv("RABBITMQ_URL")
 	if rabbitURL == "" {
 		rabbitURL = "amqp://photo:photo@localhost:5672/"

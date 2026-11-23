@@ -100,9 +100,9 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 func (h *TaskHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	task, exists := h.service.GetTask(id)
-	if !exists {
-		http.Error(w, "Task not found", http.StatusNotFound)
+	task, err := h.service.GetTask(r.Context(), id)
+	if err != nil {
+		writeTaskError(w, err)
 		return
 	}
 
@@ -130,9 +130,9 @@ func (h *TaskHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 func (h *TaskHandler) GetResult(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	task, exists := h.service.GetTask(id)
-	if !exists {
-		http.Error(w, "Task not found", http.StatusNotFound)
+	task, err := h.service.GetTask(r.Context(), id)
+	if err != nil {
+		writeTaskError(w, err)
 		return
 	}
 
@@ -143,7 +143,7 @@ func (h *TaskHandler) GetResult(w http.ResponseWriter, r *http.Request) {
 
 	imageBytes, err := base64.StdEncoding.DecodeString(task.Result)
 	if err != nil {
-		http.Error(w, "Failed to decode task result", http.StatusInternalServerError)
+		writeTaskError(w, err)
 		return
 	}
 
@@ -186,11 +186,30 @@ func (h *TaskHandler) CommitResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	exists := h.service.CommitTask(req.TaskID, req.Status, req.Result)
-	if !exists {
-		http.Error(w, "Task not found", http.StatusNotFound)
+	err = h.service.CommitTask(r.Context(), req.TaskID, req.Status, req.Result)
+	if err != nil {
+		writeTaskError(w, err)
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func writeTaskError(w http.ResponseWriter, err error) {
+	if errors.Is(err, models.ErrTaskNotFound) {
+		http.Error(
+			w,
+			"Task not found",
+			http.StatusNotFound,
+		)
+		return
+	}
+
+	log.Printf("Task storage error: %v", err)
+
+	http.Error(
+		w,
+		"Internal server error",
+		http.StatusInternalServerError,
+	)
 }

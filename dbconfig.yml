@@ -1,0 +1,11 @@
+development:
+  dialect: postgres
+  datasource: "host=localhost port=5430 user=photo password=photo dbname=photo_editor sslmode=disable"
+  dir: migrations
+  table: schema_migrations
+
+test:
+  dialect: postgres
+  datasource: "host=localhost port=5430 user=photo password=photo dbname=photo_editor_test sslmode=disable"
+  dir: migrations
+  table: schema_migrations
