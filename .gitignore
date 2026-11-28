@@ -1,0 +1,13 @@
+server
+/bin/
+
+*.png
+!/tests/course/static/sigma.png
+
+.venv/
+__pycache__/
+.pytest_cache/
+
+.env
+.env.*
+!.env.example

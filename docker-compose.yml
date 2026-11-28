@@ -1,0 +1,152 @@
+x-max-task-message-size: &max-task-message-size "100000000"
+
+services:
+  rabbitmq:
+    image: rabbitmq:4-management
+
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+    environment:
+      RABBITMQ_DEFAULT_USER: photo
+      RABBITMQ_DEFAULT_PASS: photo
+      MAX_TASK_MESSAGE_SIZE: *max-task-message-size
+
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+
+    ports:
+      - "8001:8001"
+
+    environment:
+      PROCESSOR_TOKEN: "${PROCESSOR_TOKEN:?PROCESSOR_TOKEN must be set}"
+      RABBITMQ_URL: amqp://photo:photo@rabbitmq:5672/
+      POSTGRES_URL: postgres://photo:photo@postgres:5432/photo_editor?sslmode=disable
+      REDIS_ADDR: redis:6379
+      MAX_TASK_MESSAGE_SIZE: *max-task-message-size
+
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+  processor:
+    build:
+      context: .
+      dockerfile: Dockerfile.processor
+
+    ports:
+      - "127.0.0.1:9091:9091"
+
+    environment:
+      PROCESSOR_TOKEN: "${PROCESSOR_TOKEN:?PROCESSOR_TOKEN must be set}"
+      RABBITMQ_URL: amqp://photo:photo@rabbitmq:5672/
+      API_URL: http://server:8001
+
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      server:
+        condition: service_started
+
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+
+    environment:
+      POSTGRES_USER: photo
+      POSTGRES_PASSWORD: photo
+      POSTGRES_DB: photo_editor
+
+    ports:
+      - "5430:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U photo -d photo_editor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+
+    command: redis-server --appendonly yes
+
+    volumes:
+      - redis_data:/data
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v3.6.0
+
+    ports:
+      - "127.0.0.1:9090:9090"
+
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+
+    depends_on:
+      - server
+      - processor
+
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.4.15
+
+    ports:
+      - "127.0.0.1:3000:3000"
+
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: photolab_dev
+
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./monitoring/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+
+    depends_on:
+      - prometheus
+
+    restart: unless-stopped
+
+volumes:
+  rabbitmq_data:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:

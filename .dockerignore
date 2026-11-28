@@ -1,0 +1,12 @@
+.git
+.github
+.venv
+__pycache__
+.pytest_cache
+*.png
+*.jpg
+*.jpeg
+result.png
+.env
+.env.*
+!.env.example
