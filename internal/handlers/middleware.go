@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -9,6 +10,10 @@ import (
 	"photo_editor/internal/models"
 	"photo_editor/internal/service"
 )
+
+type contextKey string
+
+const userIDKey contextKey = "user_id"
 
 func AuthMiddleware(
 	auth *service.AuthService,
@@ -28,7 +33,7 @@ func AuthMiddleware(
 			return
 		}
 
-		_, err := auth.ValidateSession(r.Context(), token)
+		session, err := auth.ValidateSession(r.Context(), token)
 
 		if errors.Is(err, models.ErrSessionNotFound) {
 			http.Error(
@@ -50,6 +55,18 @@ func AuthMiddleware(
 			return
 		}
 
-		next(w, r)
+		ctx := context.WithValue(
+			r.Context(),
+			userIDKey,
+			session.UserID,
+		)
+
+		next(w, r.WithContext(ctx))
 	}
+}
+
+func UserIDFromContext(ctx context.Context) (string, bool) {
+	userID, ok := ctx.Value(userIDKey).(string)
+
+	return userID, ok && userID != ""
 }

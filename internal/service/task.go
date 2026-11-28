@@ -12,27 +12,29 @@ import (
 	"github.com/google/uuid"
 )
 
-const MaxTaskMessageSize = 99 * 1024 * 1024
-
 var ErrTaskTooLarge = errors.New("image task is too large")
 
 type TaskService struct {
-	storage   TaskStorage
-	publisher TaskPublisher
+	storage        TaskStorage
+	publisher      TaskPublisher
+	maxMessageSize int
 }
 
 func NewTaskService(
 	store TaskStorage,
 	publisher TaskPublisher,
+	maxMessageSize int,
 ) *TaskService {
 	return &TaskService{
-		storage:   store,
-		publisher: publisher,
+		storage:        store,
+		publisher:      publisher,
+		maxMessageSize: maxMessageSize,
 	}
 }
 
 func (s *TaskService) CreateTask(
 	ctx context.Context,
+	userID string,
 	image string,
 	filter models.Filter,
 ) (string, error) {
@@ -41,6 +43,7 @@ func (s *TaskService) CreateTask(
 
 	task := models.Task{
 		ID:     id,
+		UserID: userID,
 		Status: "in_progress",
 		Result: "",
 	}
@@ -56,7 +59,7 @@ func (s *TaskService) CreateTask(
 		return "", fmt.Errorf("marshal task message: %w", err)
 	}
 
-	if len(body) > MaxTaskMessageSize {
+	if len(body) > s.maxMessageSize {
 		return "", ErrTaskTooLarge
 	}
 
@@ -101,21 +104,22 @@ func (s *TaskService) CommitTask(
 	status string,
 	result string,
 ) error {
-	task, err := s.storage.Get(ctx, id)
-	if err != nil {
-		return fmt.Errorf("commit task: %w", err)
+	if status != "ready" && status != "failed" {
+		return fmt.Errorf("invalid task status: %s", status)
 	}
 
-	task.Status = status
+	if status == "failed" {
+		result = ""
+	}
 
-	if status == "ready" {
-		task.Result = result
-	} else {
-		task.Result = ""
+	task := models.Task{
+		ID:     id,
+		Status: status,
+		Result: result,
 	}
 
 	if err := s.storage.Update(ctx, task); err != nil {
-		return fmt.Errorf("commit task update: %w", err)
+		return fmt.Errorf("commit task: %w", err)
 	}
 
 	return nil
@@ -124,6 +128,7 @@ func (s *TaskService) CommitTask(
 func (s *TaskService) GetTask(
 	ctx context.Context,
 	id string,
+	userID string,
 ) (models.Task, error) {
-	return s.storage.Get(ctx, id)
+	return s.storage.GetByUser(ctx, id, userID)
 }

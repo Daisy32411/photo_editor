@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 
+	"photo_editor/internal/broker"
 	"photo_editor/internal/processor"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -50,15 +51,7 @@ func main() {
 	}
 	defer ch.Close()
 
-	_, err = ch.QueueDeclare(
-		"image_tasks",
-		true,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
+	if err := broker.DeclareQueues(ch); err != nil {
 		log.Fatal(err)
 	}
 
@@ -71,7 +64,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	consumer := processor.NewConsumer(ch, apiUrl)
+	processorToken := os.Getenv("PROCESSOR_TOKEN")
+
+	if processorToken == "" {
+		log.Fatal("PROCESSOR_TOKEN environment variable is required")
+	}
+
+	consumer := processor.NewConsumer(ch, apiUrl, processorToken)
 	log.Println("ImageProcessor started")
 
 	err = consumer.Run()

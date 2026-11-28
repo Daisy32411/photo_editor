@@ -11,6 +11,7 @@ import (
 	"photo_editor/internal/handlers"
 	"photo_editor/internal/service"
 	"photo_editor/internal/storage"
+	"strconv"
 	"time"
 
 	_ "photo_editor/docs"
@@ -25,6 +26,10 @@ import (
 // @host localhost:8001
 // @BasePath /
 
+// @securityDefinitions.apikey ProcessorAuth
+// @in header
+// @name X-Processor-Token
+// @description Internal processor authentication token
 // @securityDefinitions.apikey BearerAuth
 // @in header
 // @name Authorization
@@ -67,8 +72,15 @@ func main() {
 	}
 	defer publisher.Close()
 
-	svc := service.NewTaskService(st, publisher)
-	hs := handlers.NewTaskHandler(svc)
+	maxMessage := os.Getenv("MAX_TASK_MESSAGE_SIZE")
+
+	maxMessageInt, err := strconv.Atoi(maxMessage)
+	if err != nil || maxMessageInt <= 0 {
+		log.Fatal("Invalid MAX_TASK_MESSAGE_SIZE environment variable. It must be a positive integer.")
+	}
+
+	svc := service.NewTaskService(st, publisher, maxMessageInt)
+	hs := handlers.NewTaskHandler(svc, int64(maxMessageInt))
 
 	redisAddr := os.Getenv("REDIS_ADDR")
 
@@ -103,12 +115,23 @@ func main() {
 
 	authHandler := handlers.NewAuthHandler(authSvc)
 
+	processorToken := os.Getenv("PROCESSOR_TOKEN")
+	if processorToken == "" {
+		log.Fatal("PROCESSOR_TOKEN environment variable is required")
+	}
+
 	mux := http.NewServeMux()
 
 	mux.Handle("GET /metrics", promhttp.Handler())
 	mux.HandleFunc("POST /register", authHandler.Register)
 	mux.HandleFunc("POST /login", authHandler.Login)
-	mux.HandleFunc("POST /commit", hs.CommitResult)
+	mux.HandleFunc(
+		"POST /commit",
+		handlers.ProcessorMiddleware(
+			processorToken,
+			hs.CommitResult,
+		),
+	)
 
 	mux.HandleFunc(
 		"POST /task",

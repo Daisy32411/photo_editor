@@ -1,50 +1,56 @@
 # PhotoLab — Photo Editor
 
-**PhotoLab** — веб-приложение для асинхронной обработки PNG-изображений. Фронтенд написан на **React + JavaScript**, API и обработчик изображений — на **Go**. Задачи передаются через **RabbitMQ**, пользователи и результаты сохраняются в **PostgreSQL**, сессии — в **Redis**, а метрики собирают **Prometheus и Grafana**.
+**PhotoLab** — учебное веб-приложение для асинхронной обработки PNG-изображений. Фронтенд написан на React + JavaScript, HTTP API и отдельный ImageProcessor — на Go. Задачи передаются через RabbitMQ, пользователи и результаты сохраняются в PostgreSQL, сессии — в Redis. Мониторинг реализован с помощью Prometheus и Grafana.
 
 ## Возможности
 
-- Регистрация, вход и авторизация через Bearer-токен.
-- Загрузка PNG, выбор фильтра, сравнение до/после и скачивание готового изображения.
+- Регистрация, вход, bcrypt-хеширование паролей и авторизация через Bearer-токен.
+- Загрузка PNG, выбор фильтра, сравнение до/после и скачивание результата.
 - Четыре фильтра: `Negative`, `Blur`, `Sharpen`, `FlipX`.
-- Асинхронная очередь задач и статусы `in_progress`, `ready`, `failed`.
-- Постоянное хранение пользователей, задач и результатов в PostgreSQL.
-- Сессии в Redis с TTL **7 дней**.
-- SQL-миграции, Swagger UI, Go- и Python-тесты, GitHub Actions CI.
-- Мониторинг двух Go-приложений и дашборд Grafana с тремя графиками.
+- Асинхронное выполнение задач со статусами `in_progress`, `ready`, `failed`.
+- Привязка задач к пользователям и проверка владельца при чтении статуса и результата.
+- Служебная авторизация Processor, атомарное завершение задач и идемпотентность повторных commit-запросов.
+- RabbitMQ Publisher Confirms, восстановление соединения, ограниченные повторные доставки и Dead Letter Queue (DLQ).
+- Ограничения размера HTTP-запроса, AMQP-сообщения и количества пикселей PNG.
+- PostgreSQL, Redis с TTL сессий 7 дней, SQL-миграции, Swagger, Go- и Python-тесты, GitHub Actions CI.
+- Метрики двух Go-приложений и автоматически загружаемый дашборд Grafana.
 
 ## Архитектура
 
 ```text
-                        PhotoLab (React/Vite :5173)
-                                  |
-                            Vite /api proxy
-                                  |
-                                  v
-                           Go HTTP API :8001
-                             /     |      \
-                            /      |       \
-                           v       v        v
-                     PostgreSQL   Redis   RabbitMQ
-                      users/tasks sessions   |
-                                             v
-                                    ImageProcessor (Go)
-                                             |
-                                      POST /commit
-                                             |
-                                             v
-                                        Go HTTP API
+                   PhotoLab (React/Vite :5173)
+                              |
+                         Vite /api proxy
+                              |
+                       Go HTTP API :8001
+                        /      |       \
+                       v       v        v
+                 PostgreSQL   Redis   RabbitMQ
+                 users/tasks sessions image_tasks (quorum)
+                                          |
+                                          v
+                                     ImageProcessor
+                                          |
+                               POST /commit + processor token
+                                          |
+                                          v
+                                     Go HTTP API
 
-               Go HTTP API :8001/metrics  ─┐
-           ImageProcessor :9091/metrics  ───┼─> Prometheus :9090
-                                          └────────> Grafana :3000
+                 RabbitMQ image_tasks --> image_tasks_dlx --> image_tasks_dlq
+                   (rejected / delivery limit)
+
+                 Go API :8001/metrics --------+
+                 Processor :9091/metrics -----+--> Prometheus :9090
+                                                          ^
+                                                          |
+                                                    Grafana :3000
 ```
 
-1. Пользователь отправляет PNG и выбранный фильтр в API.
-2. Go сохраняет задачу со статусом `in_progress` в PostgreSQL и публикует сообщение в RabbitMQ.
-3. Отдельный ImageProcessor получает сообщение, обрабатывает изображение и отправляет результат в служебный `POST /commit`.
-4. API записывает статус и результат в PostgreSQL; фронтенд периодически запрашивает статус и получает готовую PNG.
-5. Prometheus опрашивает `/metrics` у обоих Go-процессов, а Grafana строит графики.
+1. Пользователь отправляет PNG в Base64 и выбранный фильтр в API.
+2. API проверяет авторизацию и лимиты, сохраняет задачу с `user_id` и статусом `in_progress`, публикует сообщение в RabbitMQ с подтверждением брокера.
+3. ImageProcessor получает сообщение, проверяет PNG и количество пикселей, применяет фильтр и отправляет результат в `POST /commit` с `X-Processor-Token`.
+4. API атомарно переводит задачу в конечный статус. Processor подтверждает сообщение (`ACK`) после успешного commit. Фронтенд запрашивает статус и скачивает результат.
+5. Постоянные ошибки отправляются в DLQ; временные ошибки допускают ограниченные повторные доставки. Prometheus собирает метрики, Grafana визуализирует их.
 
 ## Технологии
 
@@ -53,50 +59,78 @@
 | Фронтенд | React, JavaScript (JSX), Vite |
 | API | Go, `net/http`, Swagger / Swaggo |
 | Обработка изображений | Go, `imaging` |
-| Брокер сообщений | RabbitMQ, `amqp091-go` |
-| Постоянное хранилище | PostgreSQL, `pgx/v5/pgxpool` |
-| Сессии | Redis, `go-redis/v9` |
+| Брокер | RabbitMQ 4, `amqp091-go` |
+| Постоянное хранилище | PostgreSQL 17, `pgx/v5/pgxpool` |
+| Сессии | Redis 7, `go-redis/v9` |
 | Миграции | `rubenv/sql-migrate` |
 | Метрики | `prometheus/client_golang`, Prometheus |
 | Дашборды | Grafana |
-| Тесты и CI | Go testing, pytest, Pillow, GitHub Actions |
-| Инфраструктура | Docker Compose |
+| Тесты и CI | Go testing, pytest, requests, Pillow, Pika, GitHub Actions |
+| Инфраструктура | Docker Compose, Make |
 
 ## Быстрый запуск
 
 ### Требования
 
-- Docker и Docker Compose (`docker compose`).
-- Node.js и npm — для локального запуска React-фронтенда.
-- Go — для разработки, Go-тестов и запуска `sql-migrate`.
-- Python 3 — для интеграционных тестов.
+- Docker и Docker Compose v2, Make, OpenSSL, curl.
+- Go (версия указана в `go.mod`) — для миграций и локальных Go-тестов.
+- Node.js и npm — для React-фронтенда.
+- Python 3.12 — для интеграционных тестов.
+
+Получить репозиторий:
 
 ```bash
-# Получить репозиторий
- git clone https://github.com/Daisy32411/photo_editor.git
- cd photo_editor
-
-# Запустить сервер, Processor, брокер, базы данных и мониторинг
- docker compose up -d --build
- docker compose ps
+git clone -b hw1 https://github.com/Daisy32411/photo_editor.git
+cd photo_editor
 ```
 
-> **Важно:** на совершенно новой базе нужно **применить миграции**, прежде чем регистрировать пользователей или запускать обработку. `docker compose up` сам по себе не создаёт таблицы `users` и `tasks`.
+### Секрет Processor
 
-Установить CLI миграций (один раз):
+Создать локальный `.env` (один раз):
+
+```bash
+touch .env
+chmod 600 .env
+grep -q '^PROCESSOR_TOKEN=' .env || \
+  printf '\nPROCESSOR_TOKEN=%s\n' "$(openssl rand -hex 32)" >> .env
+```
+
+`PROCESSOR_TOKEN` должен быть непустым и одинаковым для Server и Processor. Docker Compose читает `.env` автоматически. Если в терминале уже экспортирован другой токен, он имеет приоритет над `.env`; используйте одно и то же значение для контейнеров и тестов.
+
+Не коммитьте `.env`. Он должен быть исключён из Git (`.gitignore`) и из контекста Docker-сборки (`.dockerignore`). В CI токен генерируется автоматически и маскируется в логах.
+
+### Миграции и Docker
+
+Установить CLI миграций:
 
 ```bash
 go install github.com/rubenv/sql-migrate/...@latest
 ```
 
-В репозитории есть `dbconfig.yml` с настройками подключения с хост-машины: **`localhost:5430`**. Применить миграции из корня проекта:
+Запустить проект:
 
 ```bash
-"$(go env GOPATH)/bin/sql-migrate" up
-"$(go env GOPATH)/bin/sql-migrate" status
+make up
+make ps
 ```
 
-Затем запустить фронтенд **в отдельном терминале**:
+`make up` запускает PostgreSQL, Redis и RabbitMQ, применяет миграции `development`, собирает и запускает остальные сервисы, проверяет доступность API. Эквивалент без Makefile:
+
+```bash
+docker compose up -d --wait --wait-timeout 120 postgres redis rabbitmq
+"$(go env GOPATH)/bin/sql-migrate" up -env=development
+docker compose up -d --build --wait --wait-timeout 120
+curl -fsS --retry 30 --retry-all-errors --retry-delay 1 --max-time 5 \
+  http://localhost:8001/metrics > /dev/null
+```
+
+На новой базе миграции обязательны: Docker Compose сам не создаёт таблицы `users` и `tasks`.
+
+Если ранее использовалась очередь `image_tasks` типа Classic, см. раздел «Переход со старой очереди» перед запуском новых версий Server и Processor.
+
+### Фронтенд
+
+В отдельном терминале:
 
 ```bash
 cd frontend
@@ -104,13 +138,13 @@ npm install
 npm run dev
 ```
 
-Открой **http://localhost:5173**. Vite проксирует запросы `/api/*` на `http://127.0.0.1:8001/*`, поэтому при локальной разработке отдельно настраивать CORS не нужно. Фронтенд пока запускается **вне Docker Compose**.
+Открыть **http://localhost:5173**. Vite проксирует `/api/*` на `http://127.0.0.1:8001/*`. При локальной разработке отдельная настройка CORS не требуется. Фронтенд запускается вне Docker Compose.
 
 ### Адреса сервисов
 
 | Сервис | Локальный адрес |
 | --- | --- |
-| PhotoLab (React) | http://localhost:5173 |
+| PhotoLab | http://localhost:5173 |
 | Go API | http://localhost:8001 |
 | Swagger UI | http://localhost:8001/swagger/index.html |
 | RabbitMQ Management | http://localhost:15672 |
@@ -121,86 +155,76 @@ npm run dev
 | Prometheus targets | http://localhost:9090/targets |
 | Grafana | http://localhost:3000 |
 
-Локальные учётные данные: RabbitMQ — `photo` / `photo`; PostgreSQL — `photo` / `photo` (база `photo_editor`); Grafana — `admin` / `photolab_dev`.
+Демонстрационные учётные данные: RabbitMQ — `photo` / `photo`; PostgreSQL — `photo` / `photo`, база `photo_editor`; Grafana — `admin` / `photolab_dev`. Они предназначены только для локальной разработки.
 
-Эти данные предназначены **только для локальной разработки**. Не используйте их для публичного развёртывания.
+### Makefile
 
-### Полезные команды
+| Команда | Назначение |
+| --- | --- |
+| `make infra` | Запустить PostgreSQL, Redis, RabbitMQ |
+| `make migrate` | Запустить инфраструктуру и применить миграции development |
+| `make up` | Применить миграции, собрать и запустить все сервисы, дождаться API |
+| `make down` | Остановить и удалить контейнеры без удаления volumes |
+| `make restart` | Перезапустить проект |
+| `make ps` / `make logs` | Состояние контейнеров / поток логов |
+| `make build` | Собрать server и processor в `bin/` |
+| `make test` / `make vet` / `make check` | Go-тесты / статический анализ / обе проверки |
+| `make fmt` | Форматирование Go-кода |
+| `make migrate-test` | Создать тестовую базу при необходимости, применить миграции |
+| `make test-postgres` | Тесты PostgreSQL с Race Detector |
+| `make test-python` | Все три набора Python-тестов (включая перезапуски сервисов) |
+| `make swagger` | Перегенерировать Swagger |
+| `make clean` | Удалить локальные бинарные файлы |
 
-```bash
-make up                 # собрать и запустить Docker-сервисы
-make down               # остановить Docker-сервисы
-make ps                 # состояние контейнеров
-make logs               # поток логов
-make check              # go vet + go test
-make build              # собрать server и processor в bin/
-
-docker compose logs -f server processor
-```
-
-**Не выполняйте `docker compose down -v`, если хотите сохранить данные**: ключ `-v` удаляет Docker volumes, включая PostgreSQL, Redis, Prometheus и Grafana.
+> Не используйте `docker compose down -v`, если хотите сохранить данные. Этот флаг удаляет volumes PostgreSQL, Redis, RabbitMQ и мониторинга.
 
 ## REST API
 
-Все пользовательские запросы, кроме регистрации и входа, требуют заголовок:
+| Метод | Маршрут | Авторизация | Назначение |
+| --- | --- | --- | --- |
+| POST | `/register` | Нет | Регистрация |
+| POST | `/login` | Нет | Вход и получение токена |
+| POST | `/task` | Bearer | Создание задачи |
+| GET | `/status/{id}` | Bearer | Статус собственной задачи |
+| GET | `/result/{id}` | Bearer | Результат собственной задачи |
+| POST | `/commit` | `X-Processor-Token` | Служебное завершение задачи |
+| GET | `/metrics` | Нет | Метрики API |
 
-```http
-Authorization: Bearer <token>
-```
-
-| Метод | Маршрут | Назначение |
-| --- | --- | --- |
-| `POST` | `/register` | Регистрация пользователя |
-| `POST` | `/login` | Вход и получение токена |
-| `POST` | `/task` | Создать задачу обработки PNG |
-| `GET` | `/status/{id}` | Получить статус задачи |
-| `GET` | `/result/{id}` | Скачать обработанную PNG |
-| `POST` | `/commit` | Служебный приём результата от Processor |
-| `GET` | `/metrics` | Метрики Go API |
-
-### Регистрация
+### Регистрация и вход
 
 ```bash
 curl -i -X POST http://localhost:8001/register \
   -H 'Content-Type: application/json' \
   -d '{"username":"alex","password":"123456"}'
-```
 
-Успех — HTTP `201 Created`; повторная регистрация того же имени — `409 Conflict`.
-
-### Вход
-
-```bash
 curl -X POST http://localhost:8001/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"alex","password":"123456"}'
 ```
 
-Пример ответа:
+Регистрация возвращает `201 Created`; повторное имя — `409 Conflict`. Успешный вход возвращает `200 OK` и JSON:
 
 ```json
 {"token":"<64-символьный-hex-токен>"}
 ```
 
-Сессия хранится в Redis под ключом `session:<token>` с TTL семь дней.
+Пользовательский токен передаётся в заголовке `Authorization: Bearer <token>`. Сессия хранится в Redis под ключом `session:<token>` семь дней.
 
 ### Создание задачи
 
-`POST /task` принимает PNG в Base64 и настройки фильтра:
+`POST /task` принимает PNG в Base64 и параметры фильтра:
 
 ```json
 {
   "image": "<base64-encoded-png>",
   "filter": {
     "name": "Blur",
-    "parameters": {
-      "sigma": 2.5
-    }
+    "parameters": {"sigma": 2.5}
   }
 }
 ```
 
-Ответ при успехе — HTTP `201 Created`:
+Успешный ответ — `201 Created`:
 
 ```json
 {"task_id":"<uuid>"}
@@ -208,10 +232,14 @@ curl -X POST http://localhost:8001/login \
 
 ### Статус и результат
 
+Подставьте действительный идентификатор задачи и пользовательский токен:
+
 ```bash
-curl http://localhost:8001/status/<uuid> \
+curl 'http://localhost:8001/status/<uuid>' \
   -H 'Authorization: Bearer <token>'
 ```
+
+(В фактической команде замените `<uuid>` целиком; не вводите угловые скобки.)
 
 Ответ:
 
@@ -219,17 +247,46 @@ curl http://localhost:8001/status/<uuid> \
 {"status":"in_progress"}
 ```
 
-Возможные статусы: `in_progress`, `ready`, `failed`.
-
-Когда статус `ready`, результат доступен как **сырые PNG-байты**, не JSON:
+Возможные статусы: `in_progress`, `ready`, `failed`. Когда задача готова, результат возвращается как PNG-байты с `Content-Type: image/png`, а не JSON:
 
 ```bash
-curl -fS http://localhost:8001/result/<uuid> \
+curl -fS 'http://localhost:8001/result/<uuid>' \
   -H 'Authorization: Bearer <token>' \
   -o result.png
 ```
 
-Пока результат не готов, `/result/{id}` возвращает `409 Conflict`. При отсутствии задачи возвращается `404 Not Found`.
+| Код | Значение |
+| --- | --- |
+| 200 | Статус или готовый PNG |
+| 400 | Некорректный UUID или некорректный запрос |
+| 401 | Нет действительной авторизации |
+| 404 | Задача не существует или принадлежит другому пользователю |
+| 409 | Результат недоступен (`in_progress` или `failed`) |
+| 413 | Превышен лимит запроса или сообщения при создании задачи |
+
+Чужая задача возвращает `404`, чтобы не раскрывать её существование. Старые задачи без известного владельца также недоступны через пользовательские маршруты.
+
+### Служебный маршрут `/commit`
+
+Processor отправляет JSON с полями `task_id`, `status` и `result` (Base64 для `ready`, пустая строка для `failed`) и отдельным заголовком:
+
+```http
+X-Processor-Token: <processor-token>
+Content-Type: application/json
+```
+
+Пользовательский Bearer-токен не даёт права вызвать `/commit`.
+
+| Ситуация | Ответ |
+| --- | --- |
+| Действительный токен, первый допустимый результат | `204 No Content` |
+| Повтор того же конечного статуса и результата | `204 No Content` без изменения записи |
+| Попытка изменить завершённую задачу | `409 Conflict` |
+| Отсутствующий или неверный токен | `401 Unauthorized` |
+| Некорректный UUID, статус или тело | `400 Bad Request` |
+| Задача не существует | `404 Not Found` |
+
+Переходы `in_progress → ready` и `in_progress → failed` выполняются условным атомарным `UPDATE` в PostgreSQL. Конечные статусы не перезаписываются. При конкурентных обновлениях с разными результатами только одно может успешно изменить запись.
 
 ### Фильтры
 
@@ -238,77 +295,85 @@ curl -fS http://localhost:8001/result/<uuid> \
 | `Negative` | Инверсия RGB с сохранением прозрачности | Нет |
 | `Blur` | Размытие | `sigma`: `0 < sigma <= 20` |
 | `Sharpen` | Повышение резкости | `sigma`: `0 < sigma <= 20` |
-| `FlipX` | Вертикальное отражение (относительно оси X) | Нет |
+| `FlipX` | Вертикальное отражение относительно оси X | Нет |
+
+## RabbitMQ: надёжность и повторные доставки
+
+| Объект | Назначение |
+| --- | --- |
+| `image_tasks` | Основная durable quorum queue |
+| `image_tasks_dlx` | Direct exchange для dead-letter сообщений |
+| `image_tasks_dlq` | Отдельная durable очередь проблемных сообщений |
+
+Server и Processor используют общую декларацию очередей (`internal/broker/queue.go`). Publisher включает подтверждения публикации и при обнаружении закрытого соединения или канала восстанавливает соединение, канал, декларации и режим confirms. Состояние подключения защищено мьютексом. Повторная отправка сообщения с неопределённым результатом публикации автоматически не производится.
+
+Для основной очереди установлен `x-delivery-limit = 3`. Processor отклоняет некорректный JSON и постоянные ошибки commit (например, `400`, `401`, `404`, `409`) без повторной доставки. Сетевые ошибки, `408`, `429` и серверные ошибки допускают повторную доставку с паузой 3 секунды. При исчерпании лимита сообщение направляется в DLQ. Успешный commit завершается `ACK`.
+
+Повреждённое изображение обрабатывается как неуспешная задача: Processor пытается сохранить статус `failed` через API.
+
+Проверить очереди:
+
+```bash
+docker compose exec rabbitmq rabbitmqctl list_queues \
+  name type messages_ready messages_unacknowledged
+```
+
+### Переход со старой очереди
+
+Тип существующей Classic Queue нельзя изменить на Quorum обычным повторным объявлением. На локальном стенде прекратите отправку задач и дождитесь опустошения старой очереди. Убедитесь, что `messages_ready` и `messages_unacknowledged` равны нулю. Затем остановите приложения и удалите только пустую старую очередь:
+
+```bash
+docker compose stop server processor
+docker compose exec rabbitmq rabbitmqctl delete_queue \
+  image_tasks --if-empty --if-unused
+make up
+```
+
+Если очередь не пуста или удаление отклонено, не удаляйте её принудительно. Данные PostgreSQL, Redis и остальные volumes при этой процедуре сохраняются.
 
 ## PostgreSQL и Redis
 
-### Миграции
+Миграции находятся в `migrations/`, настройки — в `dbconfig.yml`. Существуют окружения `development` (`photo_editor`) и `test` (`photo_editor_test`), доступные с хост-машины через `localhost:5430`.
 
-Схема PostgreSQL хранится в директории `migrations/`:
+- `users`: `id`, уникальный `username`, `password_hash`, `created_at`.
+- `tasks`: `id`, `user_id` (внешний ключ на `users`), `status`, `result`, `created_at`. Для владельца предусмотрен индекс.
+- Миграция 003 добавляет владельца задач. Для старых записей поле допускает `NULL`; новые задачи создаются с владельцем.
+- `result`: PNG в Base64, поле `TEXT`.
+- `schema_migrations`: учёт применённых миграций.
 
-```text
-migrations/
-├── 001_create_users.sql
-└── 002_create_tasks.sql
-```
-
-- `users`: `id`, `username` (уникальный), `password_hash`, `created_at`.
-- `tasks`: `id`, `status`, `result`, `created_at`.
-- `result` в текущей реализации — PNG, закодированная в Base64, в поле `TEXT`.
-- `schema_migrations` используется инструментом `sql-migrate` для учёта применённых изменений.
-
-Посмотреть задачи без вывода больших Base64-строк:
+Проверка состояния базы:
 
 ```bash
+"$(go env GOPATH)/bin/sql-migrate" status -env=development
+
 docker compose exec postgres psql -U photo -d photo_editor \
-  -c 'SELECT id, status, LENGTH(result) AS result_size, created_at FROM tasks ORDER BY created_at DESC LIMIT 5;'
-```
+  -c 'SELECT id, user_id, status, LENGTH(result) AS result_size, created_at FROM tasks ORDER BY created_at DESC LIMIT 5;'
 
-Посмотреть пользователей:
-
-```bash
 docker compose exec postgres psql -U photo -d photo_editor \
   -c 'SELECT id, username FROM users;'
 ```
 
-### Сессии Redis
-
-Сессии сохраняются в Redis с TTL **604800 секунд (7 дней)**. Сохраняется связь токена с UUID пользователя; пароль и bcrypt-хеш в Redis не передаются.
+Redis хранит связь токена с UUID пользователя, не пароль и не bcrypt-хеш. TTL — `604800` секунд (7 дней). Перезапуск Go-сервера не сбрасывает действующую сессию, если Redis сохранил данные и срок сессии не истёк.
 
 ```bash
 docker compose exec redis redis-cli ping
-docker compose exec redis redis-cli --scan --pattern 'session:*'
 ```
-
-После перезапуска **только** Go-сервера действующие сессии остаются доступными, если срок их действия не истёк и Redis сохранил данные.
 
 ## Мониторинг: Prometheus + Grafana
 
-Go API экспортирует стандартные runtime-метрики по `/metrics` на порту `8001`. ImageProcessor экспортирует свои метрики по `/metrics` на порту `9091`.
+Go API экспортирует стандартные runtime-метрики на порту `8001`, ImageProcessor — метрики на порту `9091`.
 
-**Метрики ImageProcessor:**
-
-| Метрика | Тип | Значение |
+| Метрика Processor | Тип | Значение |
 | --- | --- | --- |
-| `processor_filter_usage_total{filter}` | Counter | Количество попыток применения каждого фильтра |
-| `processor_tasks_total{filter,status}` | Counter | Количество успешных и неуспешных обработок |
-| `processor_processing_duration_seconds{filter}` | Histogram | Длительность обработки изображения в секундах |
+| `processor_filter_usage_total{filter}` | Counter | Попытки применения фильтров |
+| `processor_tasks_total{filter,status}` | Counter | Успешные и неуспешные обработки изображений |
+| `processor_processing_duration_seconds{filter}` | Histogram | Время обработки в секундах |
 
-Время измеряется вокруг обработки PNG (`processImage`), а не вокруг ожидания HTTP-ответа от `/commit`. Повторная доставка сообщения RabbitMQ считается отдельной попыткой.
+Время измеряется вокруг `processImage`, а не ожидания ответа `/commit`. Повторная доставка считается отдельной попыткой обработки. Счётчики отражают попытки, а не уникальные задачи.
 
-Настройки Prometheus: `monitoring/prometheus.yml`. Он опрашивает `server:8001` и `processor:9091` каждые **5 секунд**.
+Prometheus опрашивает `server:8001` и `processor:9091` каждые 5 секунд. Проверка: http://localhost:9090/targets — обе цели должны быть `UP` при работающих сервисах.
 
-Проверить состояние целей: **http://localhost:9090/targets**. Обе должны иметь статус `UP`.
-
-### Графики Grafana
-
-Дашборд **PhotoLab — Monitoring** включает:
-
-1. **Использование фильтров** — количество запусков каждого фильтра.
-2. **Среднее время обработки** — средняя длительность для каждого фильтра.
-3. **Результаты обработки** — успешные и неуспешные попытки.
-
-Примеры запросов PromQL:
+Дашборд **PhotoLab — Monitoring** показывает использование фильтров, среднее время обработки и результаты обработки. Примеры PromQL:
 
 ```promql
 sum by (filter) (processor_filter_usage_total)
@@ -324,116 +389,124 @@ sum by (filter) (processor_processing_duration_seconds_count)
 sum by (status) (processor_tasks_total)
 ```
 
-Настройки хранятся в:
-
-```text
-monitoring/
-├── prometheus.yml
-└── grafana/
-    ├── datasources.yml
-    ├── dashboards.yml
-    └── dashboards/
-        └── photolab.json
-```
-
-Grafana автоматически подключает Prometheus как источник данных и загружает дашборд из JSON-файла при запуске контейнера.
-
-> Метрики с метками отдельных фильтров появляются после первой обработки соответствующих задач. Счётчики конкретного процесса обнуляются после его перезапуска; Prometheus сохраняет собранную ранее историю в `prometheus_data`.
+Настройки находятся в `monitoring/prometheus.yml` и `monitoring/grafana/`. Grafana автоматически подключает Prometheus и загружает дашборд `dashboards/photolab.json`. Метрики конкретного фильтра появляются после первой обработки; счётчики процесса сбрасываются при перезапуске, а история Prometheus сохраняется в volume.
 
 ## Тестирование
+
+Все команды выполняются из корня проекта.
 
 ### Go
 
 ```bash
-go test ./...
 go vet ./...
+go test -v ./...
 ```
 
-Тесты фильтров находятся в `internal/processor/filters_test.go`.
+Go-тесты включают проверки фильтров, ограничения HTTP-тела и PNG-пикселей, PostgreSQL-репозитория и конкурентных обновлений. Без `POSTGRES_TEST_URL` тесты PostgreSQL пропускаются.
 
-### Интеграционные тесты PostgreSQL
-
-Тест репозитория задач использует **отдельную базу** `photo_editor_test` и переменную `POSTGRES_TEST_URL`.
+### PostgreSQL
 
 ```bash
-docker compose exec postgres createdb -U photo photo_editor_test
+make test-postgres
 ```
 
-Добавь в `dbconfig.yml` окружение `test`, если его ещё нет:
-
-```yaml
-test:
-  dialect: postgres
-  datasource: "host=localhost port=5430 user=photo password=photo dbname=photo_editor_test sslmode=disable"
-  dir: migrations
-  table: schema_migrations
-```
-
-Примени миграции тестовой базы и запусти проверки:
+Makefile создаёт `photo_editor_test`, если база отсутствует, применяет миграции `test` и запускает тесты с Race Detector. Для ручного запуска (создать базу только один раз):
 
 ```bash
+docker compose exec -T postgres createdb -U photo photo_editor_test
 "$(go env GOPATH)/bin/sql-migrate" up -env=test
 POSTGRES_TEST_URL='postgres://photo:photo@localhost:5430/photo_editor_test?sslmode=disable' \
-  go test -v ./internal/storage
+  go test -race -v -count=1 ./...
 ```
 
-Если `POSTGRES_TEST_URL` не задан, тесты PostgreSQL могут быть пропущены (`SKIP`). Если база уже существует, повторно создавать её не требуется.
+Тесты репозитория проверяют сохранение, чтение, владельца, отсутствующие задачи, дубликаты, идемпотентность, конфликты и конкурентные обновления. Тестовая база должна отличаться от development; проверки репозитория требуют суффикс `_test`.
 
-### Python: полный путь обработки
+### Python
 
-Интеграционный тест `test.py` проверяет регистрацию, вход, отправку задачи, ожидание статуса и получение PNG для четырёх фильтров. Требуются запущенные сервисы и применённые миграции.
+Требуются запущенные сервисы, применённые миграции и тот же токен Processor, что используется контейнерами.
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install pytest requests Pillow
-python -m pytest -v test.py
+python -m pip install pytest requests Pillow 'pika<2'
+make test-python
 ```
 
-Запускать команды нужно **из корня `photo_editor`**.
+Для прямого запуска pytest в локальном окружении:
+
+```bash
+set -a
+source .env
+set +a
+python -m pytest -v --tb=short \
+  test.py tests/course/test_course.py test_rabbitmq.py
+```
+
+| Файл | Проверки | Тестов |
+| --- | --- | ---: |
+| `test.py` | HTTP API, четыре фильтра, авторизация, UUID, владельцы, commit, ошибочный JSON и PNG | 22 |
+| `tests/course/test_course.py` | Адаптированный набор HW3: регистрация, вход, задача, статус и PNG, 401, 404 | 6 |
+| `test_rabbitmq.py` | Reconnect без перезапуска Server, DLQ для неверного сообщения, ограничение retry | 3 |
+| **Всего** | | **31** |
+
+Оригинальный PNG из набора курса находится в `tests/course/static/sigma.png`. Фикстуры создают независимых пользователей, а результат проверяется как `image/png`.
+
+Последний предоставленный локальный прогон: **31 passed, 6 warnings**. Предупреждения относятся к устареванию Pika `BlockingConnection`; ограничение `pika<2` предотвращает установку будущей несовместимой основной версии, но не скрывает предупреждения.
+
+> `test_rabbitmq.py` перезапускает RabbitMQ и временно останавливает Server. Выполняйте его только на локальном учебном стенде или в CI, без важных задач в обработке. Тестовые сообщения могут остаться в DLQ.
 
 ### GitHub Actions
 
-Workflow: `.github/workflows/ci.yml`. CI проверяет Go-код, собирает оба приложения, запускает Docker Compose, применяет SQL-миграции и выполняет интеграционные тесты Python. При ошибке можно посмотреть логи контейнеров в GitHub Actions.
+Workflow: `.github/workflows/ci.yml`. При push и pull request CI генерирует временный токен Processor, выполняет `go vet` и сборку приложений, запускает инфраструктуру, создаёт тестовую БД, применяет миграции обоих окружений, выполняет все Go-тесты с Race Detector, запускает Docker-сервисы и три набора Python-тестов. При ошибке выводит логи контейнеров; остановка сервисов выполняется всегда.
+
+### Swagger
+
+```bash
+go install github.com/swaggo/swag/cmd/swag@latest
+make swagger
+```
+
+После изменения Swagger-аннотаций нужно перегенерировать `docs/` и пересобрать Server. Пользовательские маршруты используют Bearer-токен; для `/commit` предусмотрен отдельный заголовок `X-Processor-Token`.
 
 ## Структура проекта
 
 ```text
 photo_editor/
 ├── cmd/
-│   ├── server/               # Go HTTP API
-│   └── processor/            # RabbitMQ consumer + HTTP /metrics
+│   ├── server/                 # Go HTTP API
+│   └── processor/              # Consumer и метрики
 ├── internal/
-│   ├── broker/               # RabbitMQ publisher
-│   ├── handlers/             # HTTP-хендлеры и авторизация
-│   ├── models/               # модели и ошибки приложения
-│   ├── processor/            # обработка изображений и метрики
-│   ├── service/              # бизнес-логика и интерфейсы
-│   └── storage/              # PostgreSQL, Redis
-├── frontend/                 # React + JavaScript + Vite
-├── migrations/               # SQL-миграции PostgreSQL
-├── monitoring/               # Prometheus и Grafana
-├── docs/                     # Swagger
+│   ├── broker/                 # Publisher, общая декларация очередей
+│   ├── handlers/               # HTTP API, middleware, тесты лимитов
+│   ├── models/                 # Модели и ошибки
+│   ├── processor/              # Обработка PNG, retry, метрики и тесты
+│   ├── service/                # Бизнес-логика и интерфейсы
+│   └── storage/                # PostgreSQL, Redis, тесты репозитория
+├── frontend/                   # React + JavaScript + Vite
+├── migrations/                 # SQL-миграции
+├── monitoring/                 # Prometheus и Grafana
+├── docs/                       # Swagger
+├── tests/course/
+│   ├── test_course.py           # Адаптированные тесты курса
+│   └── static/sigma.png         # PNG из HW3
 ├── .github/workflows/ci.yml
 ├── docker-compose.yml
+├── rabbitmq.conf
 ├── dbconfig.yml
 ├── Dockerfile.server
 ├── Dockerfile.processor
 ├── Makefile
 ├── go.mod
-└── test.py
+├── test.py
+└── test_rabbitmq.py
 ```
 
 ## Ограничения и безопасность
 
-- Проект настроен для **локальной разработки**. Логины/пароли в Docker Compose демонстрационные; перед публикацией необходимо заменить их и использовать секреты/переменные окружения.
-- `POST /commit` — **внутренний служебный маршрут**. В текущей версии у него нет отдельной авторизации: для публичного развёртывания необходимо ограничить доступ или защитить его.
-- `/metrics`, PostgreSQL, RabbitMQ Management и Grafana нельзя открывать в интернет без соответствующей защиты и ограничений доступа.
-- Результаты PNG хранятся в PostgreSQL как Base64 `TEXT`; для больших объёмов разумнее использовать файловое/object storage, сохранив в БД ссылку.
-- Состояние выполнения задачи хранится в PostgreSQL, но обработка через RabbitMQ и сохранение в БД не объединены в одну транзакцию. Для production-проекта потребуется продумать повторные попытки, согласованность операций и обработку зависших задач.
-- RabbitMQ ограничивает размер сообщения через `rabbitmq.conf` (`max_message_size`); Base64 увеличивает объём исходного PNG примерно на треть. Сервер также проверяет `MaxTaskMessageSize`.
-- Состояние сессии в Redis ограничено TTL; по истечении срока нужно выполнить вход заново.
-
----
-
-**PhotoLab** — учебный full-stack проект, объединяющий Go, React, асинхронную обработку изображений, постоянное хранение данных, тестирование и мониторинг.
+- `MAX_TASK_MESSAGE_SIZE = 100000000` байт: единый лимит для RabbitMQ и Server, задаваемый Docker Compose. API ограничивает размер HTTP-тела до декодирования JSON и отдельно проверяет длину сериализованного сообщения перед записью задачи и публикацией. Base64 и JSON входят в лимит; исходный PNG должен быть меньше 100 MB.
+- `MaxImagePixels = 32_000_000`: Processor проверяет размеры через `png.DecodeConfig` до полного декодирования изображения. Это ограничение количества пикселей, а не гарантия фиксированного потребления памяти.
+- `/commit` защищён отдельным токеном и условным обновлением в БД, но остаётся доступен на порту API. Для публичного развёртывания нужны TLS, сетевые ограничения, дополнительные лимиты служебного маршрута и безопасное управление секретами.
+- Результаты хранятся в PostgreSQL как Base64 `TEXT`. Для больших объёмов разумнее использовать объектное хранилище.
+- Запись в БД и публикация в RabbitMQ не объединены в одну транзакцию. При потере подтверждения результат публикации может быть неопределённым; для более строгих гарантий нужен, например, transactional outbox.
+- Если commit невозможно доставить после всех повторных попыток, сообщение попадёт в DLQ, но задача в PostgreSQL может остаться `in_progress`. Автоматическое восстановление таких задач и гарантированная at-least-once доставка в DLQ не реализованы.
+- Демонстрационные пароли, открытые порты API, PostgreSQL, RabbitMQ и служебные метрики не предназначены для публичного доступа. Сессия ограничена TTL: после истечения срока нужен повторный вход.

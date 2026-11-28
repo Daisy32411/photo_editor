@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/google/uuid"
+	"io"
 	"log"
 	"net/http"
 	"photo_editor/internal/models"
@@ -11,12 +13,17 @@ import (
 )
 
 type TaskHandler struct {
-	service *service.TaskService
+	service     *service.TaskService
+	maxBodySize int64
 }
 
-func NewTaskHandler(service *service.TaskService) *TaskHandler {
+func NewTaskHandler(
+	service *service.TaskService,
+	maxBodySize int64,
+) *TaskHandler {
 	return &TaskHandler{
-		service: service,
+		service:     service,
+		maxBodySize: maxBodySize,
 	}
 }
 
@@ -38,10 +45,43 @@ func NewTaskHandler(service *service.TaskService) *TaskHandler {
 // @Failure 503 {string} string "Failed to publish task to RabbitMQ"
 // @Router /task [post]
 func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
+	userID, ok := UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, h.maxBodySize)
+	defer r.Body.Close()
+
 	var req CreateImageTaskRequest
 
-	err := json.NewDecoder(r.Body).Decode(&req)
+	decoder := json.NewDecoder(r.Body)
+
+	err := decoder.Decode(&req)
+
+	if err == nil {
+		err = decoder.Decode(new(any))
+
+		if err == io.EOF {
+			err = nil
+		} else if err == nil {
+			err = errors.New("unexpected data after JSON")
+		}
+	}
+
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+
+		if errors.As(err, &maxBytesErr) {
+			http.Error(
+				w,
+				"Request body is too large",
+				http.StatusRequestEntityTooLarge,
+			)
+			return
+		}
+
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
@@ -56,7 +96,12 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := h.service.CreateTask(r.Context(), req.Image, req.Filter)
+	id, err := h.service.CreateTask(
+		r.Context(),
+		userID,
+		req.Image,
+		req.Filter,
+	)
 	if err != nil {
 		log.Printf("Failed to create task: %v", err)
 
@@ -96,11 +141,22 @@ func (h *TaskHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} GetStatusResponse "Current task status"
 // @Failure 401 {string} string "Unauthorized"
 // @Failure 404 {string} string "Task not found"
+// @Failure 400 {string} string "Invalid task ID"
 // @Router /status/{id} [get]
 func (h *TaskHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	userID, ok := UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
-	task, err := h.service.GetTask(r.Context(), id)
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "Invalid task ID", http.StatusBadRequest)
+		return
+	}
+
+	task, err := h.service.GetTask(r.Context(), id.String(), userID)
 	if err != nil {
 		writeTaskError(w, err)
 		return
@@ -126,11 +182,22 @@ func (h *TaskHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 // @Failure 404 {string} string "Task not found"
 // @Failure 409 {string} string "Task is not ready"
 // @Failure 500 {string} string "Failed to decode task result"
+// @Failure 400 {string} string "Invalid task ID"
 // @Router /result/{id} [get]
 func (h *TaskHandler) GetResult(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	userID, ok := UserIDFromContext(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
-	task, err := h.service.GetTask(r.Context(), id)
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "Invalid task ID", http.StatusBadRequest)
+		return
+	}
+
+	task, err := h.service.GetTask(r.Context(), id.String(), userID)
 	if err != nil {
 		writeTaskError(w, err)
 		return
@@ -163,7 +230,10 @@ func (h *TaskHandler) GetResult(w http.ResponseWriter, r *http.Request) {
 // @Success 204 "Result successfully committed"
 // @Failure 400 {string} string "Invalid request body or task status"
 // @Failure 404 {string} string "Task not found"
+// @Failure 401 {string} string "Unauthorized processor"
+// @Failure 409 {string} string "Task is already completed"
 // @Router /commit [post]
+// @Security ProcessorAuth
 func (h *TaskHandler) CommitResult(w http.ResponseWriter, r *http.Request) {
 	var req models.CommitRequest
 
@@ -175,6 +245,10 @@ func (h *TaskHandler) CommitResult(w http.ResponseWriter, r *http.Request) {
 
 	if req.TaskID == "" {
 		http.Error(w, "Task ID is required", http.StatusBadRequest)
+		return
+	}
+	if _, err := uuid.Parse(req.TaskID); err != nil {
+		http.Error(w, "Invalid task ID", http.StatusBadRequest)
 		return
 	}
 	if req.Status != "ready" && req.Status != "failed" {
@@ -201,6 +275,15 @@ func writeTaskError(w http.ResponseWriter, err error) {
 			w,
 			"Task not found",
 			http.StatusNotFound,
+		)
+		return
+	}
+
+	if errors.Is(err, models.ErrTaskConflict) {
+		http.Error(
+			w,
+			"Task is already completed",
+			http.StatusConflict,
 		)
 		return
 	}

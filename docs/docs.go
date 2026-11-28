@@ -17,6 +17,11 @@ const docTemplate = `{
     "paths": {
         "/commit": {
             "post": {
+                "security": [
+                    {
+                        "ProcessorAuth": []
+                    }
+                ],
                 "description": "Internal endpoint used by ImageProcessor to report task completion.\nStatus must be ready or failed.\nIf status is ready, result must contain a Base64-encoded PNG.",
                 "consumes": [
                     "application/json"
@@ -32,7 +37,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/photo_editor_internal_models.CommitRequest"
+                            "$ref": "#/definitions/models.CommitRequest"
                         }
                     }
                 ],
@@ -46,8 +51,20 @@ const docTemplate = `{
                             "type": "string"
                         }
                     },
+                    "401": {
+                        "description": "Unauthorized processor",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
                     "404": {
                         "description": "Task not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "409": {
+                        "description": "Task is already completed",
                         "schema": {
                             "type": "string"
                         }
@@ -75,7 +92,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.AuthRequest"
+                            "$ref": "#/definitions/handlers.AuthRequest"
                         }
                     }
                 ],
@@ -83,7 +100,7 @@ const docTemplate = `{
                     "200": {
                         "description": "Authentication successful",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.LoginResponse"
+                            "$ref": "#/definitions/handlers.LoginResponse"
                         }
                     },
                     "400": {
@@ -124,7 +141,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.AuthRequest"
+                            "$ref": "#/definitions/handlers.AuthRequest"
                         }
                     }
                 ],
@@ -184,6 +201,12 @@ const docTemplate = `{
                             "type": "file"
                         }
                     },
+                    "400": {
+                        "description": "Invalid task ID",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
                     "401": {
                         "description": "Unauthorized",
                         "schema": {
@@ -239,7 +262,13 @@ const docTemplate = `{
                     "200": {
                         "description": "Current task status",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.GetStatusResponse"
+                            "$ref": "#/definitions/handlers.GetStatusResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid task ID",
+                        "schema": {
+                            "type": "string"
                         }
                     },
                     "401": {
@@ -282,7 +311,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.CreateImageTaskRequest"
+                            "$ref": "#/definitions/handlers.CreateImageTaskRequest"
                         }
                     }
                 ],
@@ -290,7 +319,7 @@ const docTemplate = `{
                     "201": {
                         "description": "Task successfully created",
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.CreateTaskResponse"
+                            "$ref": "#/definitions/handlers.CreateTaskResponse"
                         }
                     },
                     "400": {
@@ -322,7 +351,7 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "internal_handlers.AuthRequest": {
+        "handlers.AuthRequest": {
             "type": "object",
             "properties": {
                 "password": {
@@ -333,18 +362,10 @@ const docTemplate = `{
                 }
             }
         },
-        "internal_handlers.CreateImageTaskRequest": {
-            "type": "object",
-            "properties": {
-                "filter": {
-                    "$ref": "#/definitions/photo_editor_internal_models.Filter"
-                },
-                "image": {
-                    "type": "string"
-                }
-            }
+        "handlers.CreateImageTaskRequest": {
+            "type": "object"
         },
-        "internal_handlers.CreateTaskResponse": {
+        "handlers.CreateTaskResponse": {
             "type": "object",
             "properties": {
                 "task_id": {
@@ -352,7 +373,7 @@ const docTemplate = `{
                 }
             }
         },
-        "internal_handlers.GetStatusResponse": {
+        "handlers.GetStatusResponse": {
             "type": "object",
             "properties": {
                 "status": {
@@ -360,7 +381,7 @@ const docTemplate = `{
                 }
             }
         },
-        "internal_handlers.LoginResponse": {
+        "handlers.LoginResponse": {
             "type": "object",
             "properties": {
                 "token": {
@@ -368,7 +389,7 @@ const docTemplate = `{
                 }
             }
         },
-        "photo_editor_internal_models.CommitRequest": {
+        "models.CommitRequest": {
             "type": "object",
             "properties": {
                 "result": {
@@ -381,20 +402,6 @@ const docTemplate = `{
                     "type": "string"
                 }
             }
-        },
-        "photo_editor_internal_models.Filter": {
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string"
-                },
-                "parameters": {
-                    "type": "array",
-                    "items": {
-                        "type": "integer"
-                    }
-                }
-            }
         }
     },
     "securityDefinitions": {
@@ -402,6 +409,12 @@ const docTemplate = `{
             "description": "Enter your session token in the format: Bearer \u003ctoken\u003e",
             "type": "apiKey",
             "name": "Authorization",
+            "in": "header"
+        },
+        "ProcessorAuth": {
+            "description": "Internal processor authentication token",
+            "type": "apiKey",
+            "name": "X-Processor-Token",
             "in": "header"
         }
     }

@@ -4,63 +4,108 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"sync"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type RabbitMQPublisher struct {
-	conn      *amqp.Connection
-	channel   *amqp.Channel
-	queueName string
+	mu      sync.Mutex
+	url     string
+	conn    *amqp.Connection
+	channel *amqp.Channel
+	closed  bool
 }
 
-// NewRabbitMQPublisher подключается к RabbitMQ
 func NewRabbitMQPublisher(url string) (*RabbitMQPublisher, error) {
-	conn, err := amqp.Dial(url)
-	if err != nil {
+	publisher := &RabbitMQPublisher{
+		url: url,
+	}
+
+	if err := publisher.connect(); err != nil {
 		return nil, err
 	}
 
-	ch, err := conn.Channel()
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
-
-	queue, err := ch.QueueDeclare(
-		"image_tasks",
-		true,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		ch.Close()
-		conn.Close()
-		return nil, err
-	}
-
-	err = ch.Confirm(false)
-	if err != nil {
-		ch.Close()
-		conn.Close()
-		return nil, err
-	}
-
-	return &RabbitMQPublisher{
-		conn:      conn,
-		channel:   ch,
-		queueName: queue.Name,
-	}, nil
+	return publisher, nil
 }
 
-// Publish отправляет сообщение в RabbitMQ
-func (p *RabbitMQPublisher) Publish(ctx context.Context, body []byte) error {
+func (p *RabbitMQPublisher) connect() error {
+	p.disconnect()
+
+	conn, err := amqp.Dial(p.url)
+	if err != nil {
+		return fmt.Errorf("connect to RabbitMQ: %w", err)
+	}
+
+	channel, err := conn.Channel()
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("create RabbitMQ channel: %w", err)
+	}
+
+	if err := DeclareQueues(channel); err != nil {
+		conn.Close()
+		return err
+	}
+
+	if err := channel.Confirm(false); err != nil {
+		conn.Close()
+		return fmt.Errorf("enable publisher confirms: %w", err)
+	}
+
+	p.conn = conn
+	p.channel = channel
+
+	log.Println("RabbitMQ publisher connected")
+
+	return nil
+}
+
+func (p *RabbitMQPublisher) disconnect() {
+	if p.conn != nil {
+		p.conn.Close()
+	}
+
+	p.channel = nil
+	p.conn = nil
+}
+
+func (p *RabbitMQPublisher) Publish(
+	ctx context.Context,
+	body []byte,
+) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.closed {
+		return errors.New("RabbitMQ publisher is closed")
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if p.conn == nil ||
+		p.conn.IsClosed() ||
+		p.channel == nil ||
+		p.channel.IsClosed() {
+
+		log.Println("RabbitMQ connection unavailable, reconnecting")
+
+		if err := p.connect(); err != nil {
+			return err
+		}
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	confirmation, err := p.channel.PublishWithDeferredConfirmWithContext(
 		ctx,
 		"",
-		p.queueName,
+		TaskQueue,
 		false,
 		false,
 		amqp.Publishing{
@@ -69,25 +114,35 @@ func (p *RabbitMQPublisher) Publish(ctx context.Context, body []byte) error {
 			Body:         body,
 		},
 	)
+
 	if err != nil {
-		return fmt.Errorf("failed to publish message: %w", err)
+		p.disconnect()
+		return fmt.Errorf("publish message: %w", err)
 	}
+
 	if confirmation == nil {
-		return errors.New("publisher confirms are not enabled")
+		p.disconnect()
+		return errors.New("publisher confirmation is unavailable")
 	}
-	confirmed, err := confirmation.WaitContext(ctx)
+
+	acknowledged, err := confirmation.WaitContext(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to wait for RabbitMQ confirmation: %w", err)
+		p.disconnect()
+		return fmt.Errorf("wait for publisher confirmation: %w", err)
 	}
-	if !confirmed {
-		return errors.New("RabbitMQ rejected the message")
+
+	if !acknowledged {
+		p.disconnect()
+		return errors.New("RabbitMQ did not acknowledge message")
 	}
 
 	return nil
 }
 
-// Close закрывает соединение с RabbitMQ
 func (p *RabbitMQPublisher) Close() {
-	p.channel.Close()
-	p.conn.Close()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.closed = true
+	p.disconnect()
 }

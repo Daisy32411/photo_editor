@@ -12,29 +12,39 @@ import (
 	"net/http"
 	"time"
 
+	"photo_editor/internal/broker"
 	"photo_editor/internal/models"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+const MaxImagePixels = 32_000_000
+
 var ErrTaskNotFound = errors.New("task not found on HTTP server")
+var ErrPermanentCommit = errors.New("permanent commit error")
 
 type Consumer struct {
-	channel *amqp.Channel
-	apiURL  string
+	channel        *amqp.Channel
+	apiURL         string
+	processorToken string
 }
 
-func NewConsumer(ch *amqp.Channel, apiURL string) *Consumer {
+func NewConsumer(
+	ch *amqp.Channel,
+	apiURL string,
+	processorToken string,
+) *Consumer {
 	return &Consumer{
-		channel: ch,
-		apiURL:  apiURL,
+		channel:        ch,
+		apiURL:         apiURL,
+		processorToken: processorToken,
 	}
 }
 
 // Run слушает очередь
 func (c *Consumer) Run() error {
 	deliveries, err := c.channel.Consume(
-		"image_tasks",
+		broker.TaskQueue,
 		"",
 		false,
 		false,
@@ -49,57 +59,57 @@ func (c *Consumer) Run() error {
 	for delivery := range deliveries {
 		var message models.ImageTaskMessage
 
-		err = json.Unmarshal(delivery.Body, &message)
-		if err != nil {
-			log.Printf("Failed to decode message: %v", err)
-			errRec := delivery.Reject(false)
-			if errRec != nil {
-				return errRec
+		if err := json.Unmarshal(delivery.Body, &message); err != nil {
+			log.Printf("Invalid message, sending to DLQ: %v", err)
+
+			if err := delivery.Reject(false); err != nil {
+				return err
 			}
+
 			continue
 		}
 
 		log.Printf("Received task: %s", message.TaskID)
 
-		err = c.processMessage(message)
+		err := c.processMessage(message)
 		if err != nil {
-			if errors.Is(err, ErrTaskNotFound) {
+			if errors.Is(err, ErrTaskNotFound) ||
+				errors.Is(err, ErrPermanentCommit) {
+
 				log.Printf(
-					"Task %s not found on HTTP server, rejecting message",
+					"Permanent error for task %s, sending to DLQ: %v",
 					message.TaskID,
+					err,
 				)
 
-				errRec := delivery.Reject(false)
-				if errRec != nil {
-					return errRec
+				if err := delivery.Reject(false); err != nil {
+					return err
 				}
 
 				continue
 			}
 
 			log.Printf(
-				"Failed to process task %s: %v. Requeueing message",
+				"Temporary error for task %s: %v. Retrying",
 				message.TaskID,
 				err,
 			)
 
 			time.Sleep(3 * time.Second)
 
-			errNack := delivery.Nack(false, true)
-			if errNack != nil {
-				return errNack
+			if err := delivery.Reject(true); err != nil {
+				return err
 			}
 
 			continue
 		}
 
-		err = delivery.Ack(false)
-		if err != nil {
+		if err := delivery.Ack(false); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	return errors.New("RabbitMQ deliveries channel closed")
 }
 
 // processMessage
@@ -159,6 +169,19 @@ func processImage(message models.ImageTaskMessage) (string, error) {
 		return "", fmt.Errorf("failed to decode base64 image: %w", err)
 	}
 
+	config, err := png.DecodeConfig(bytes.NewReader(imageBytes))
+	if err != nil {
+		return "", fmt.Errorf("failed to decode PNG config: %w", err)
+	}
+
+	if config.Width <= 0 || config.Height <= 0 {
+		return "", errors.New("invalid image dimensions")
+	}
+
+	if config.Width > MaxImagePixels/config.Height {
+		return "", fmt.Errorf("image dimensions exceed maximum allowed pixels: %dx%d", config.Width, config.Height)
+	}
+
 	img, err := png.Decode(bytes.NewReader(imageBytes))
 	if err != nil {
 		return "", fmt.Errorf("failed to decode PNG: %w", err)
@@ -202,6 +225,7 @@ func (c *Consumer) sendCommit(commit models.CommitRequest) error {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Processor-Token", c.processorToken)
 
 	client := &http.Client{
 		Timeout: 30 * time.Second,
@@ -214,11 +238,30 @@ func (c *Consumer) sendCommit(commit models.CommitRequest) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("%w: task %s", ErrTaskNotFound, commit.TaskID)
+		return fmt.Errorf(
+			"%w: task %s",
+			ErrTaskNotFound,
+			commit.TaskID,
+		)
+	}
+
+	if resp.StatusCode >= 400 &&
+		resp.StatusCode < 500 &&
+		resp.StatusCode != http.StatusRequestTimeout &&
+		resp.StatusCode != http.StatusTooManyRequests {
+
+		return fmt.Errorf(
+			"%w: HTTP %d",
+			ErrPermanentCommit,
+			resp.StatusCode,
+		)
 	}
 
 	if resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("commit failed with status: %d", resp.StatusCode)
+		return fmt.Errorf(
+			"commit failed with status: %d",
+			resp.StatusCode,
+		)
 	}
 
 	return nil

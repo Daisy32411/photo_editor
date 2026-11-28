@@ -1,35 +1,30 @@
 basePath: /
 definitions:
-  internal_handlers.AuthRequest:
+  handlers.AuthRequest:
     properties:
       password:
         type: string
       username:
         type: string
     type: object
-  internal_handlers.CreateImageTaskRequest:
-    properties:
-      filter:
-        $ref: '#/definitions/photo_editor_internal_models.Filter'
-      image:
-        type: string
+  handlers.CreateImageTaskRequest:
     type: object
-  internal_handlers.CreateTaskResponse:
+  handlers.CreateTaskResponse:
     properties:
       task_id:
         type: string
     type: object
-  internal_handlers.GetStatusResponse:
+  handlers.GetStatusResponse:
     properties:
       status:
         type: string
     type: object
-  internal_handlers.LoginResponse:
+  handlers.LoginResponse:
     properties:
       token:
         type: string
     type: object
-  photo_editor_internal_models.CommitRequest:
+  models.CommitRequest:
     properties:
       result:
         type: string
@@ -37,15 +32,6 @@ definitions:
         type: string
       task_id:
         type: string
-    type: object
-  photo_editor_internal_models.Filter:
-    properties:
-      name:
-        type: string
-      parameters:
-        items:
-          type: integer
-        type: array
     type: object
 host: localhost:8001
 info:
@@ -69,7 +55,7 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/photo_editor_internal_models.CommitRequest'
+          $ref: '#/definitions/models.CommitRequest'
       responses:
         "204":
           description: Result successfully committed
@@ -77,10 +63,20 @@ paths:
           description: Invalid request body or task status
           schema:
             type: string
+        "401":
+          description: Unauthorized processor
+          schema:
+            type: string
         "404":
           description: Task not found
           schema:
             type: string
+        "409":
+          description: Task is already completed
+          schema:
+            type: string
+      security:
+      - ProcessorAuth: []
       summary: Commit image processing result
       tags:
       - internal
@@ -95,14 +91,14 @@ paths:
         name: credentials
         required: true
         schema:
-          $ref: '#/definitions/internal_handlers.AuthRequest'
+          $ref: '#/definitions/handlers.AuthRequest'
       produces:
       - application/json
       responses:
         "200":
           description: Authentication successful
           schema:
-            $ref: '#/definitions/internal_handlers.LoginResponse'
+            $ref: '#/definitions/handlers.LoginResponse'
         "400":
           description: Invalid JSON
           schema:
@@ -129,7 +125,7 @@ paths:
         name: credentials
         required: true
         schema:
-          $ref: '#/definitions/internal_handlers.AuthRequest'
+          $ref: '#/definitions/handlers.AuthRequest'
       responses:
         "201":
           description: User registered successfully
@@ -166,6 +162,10 @@ paths:
           description: Processed PNG image
           schema:
             type: file
+        "400":
+          description: Invalid task ID
+          schema:
+            type: string
         "401":
           description: Unauthorized
           schema:
@@ -202,7 +202,11 @@ paths:
         "200":
           description: Current task status
           schema:
-            $ref: '#/definitions/internal_handlers.GetStatusResponse'
+            $ref: '#/definitions/handlers.GetStatusResponse'
+        "400":
+          description: Invalid task ID
+          schema:
+            type: string
         "401":
           description: Unauthorized
           schema:
@@ -231,14 +235,14 @@ paths:
         name: request
         required: true
         schema:
-          $ref: '#/definitions/internal_handlers.CreateImageTaskRequest'
+          $ref: '#/definitions/handlers.CreateImageTaskRequest'
       produces:
       - application/json
       responses:
         "201":
           description: Task successfully created
           schema:
-            $ref: '#/definitions/internal_handlers.CreateTaskResponse'
+            $ref: '#/definitions/handlers.CreateTaskResponse'
         "400":
           description: Invalid JSON, missing image or filter
           schema:
@@ -265,5 +269,10 @@ securityDefinitions:
     description: 'Enter your session token in the format: Bearer <token>'
     in: header
     name: Authorization
+    type: apiKey
+  ProcessorAuth:
+    description: Internal processor authentication token
+    in: header
+    name: X-Processor-Token
     type: apiKey
 swagger: "2.0"

@@ -1,3 +1,5 @@
+x-max-task-message-size: &max-task-message-size "100000000"
+
 services:
   rabbitmq:
     image: rabbitmq:4-management
@@ -9,6 +11,7 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: photo
       RABBITMQ_DEFAULT_PASS: photo
+      MAX_TASK_MESSAGE_SIZE: *max-task-message-size
 
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
@@ -29,9 +32,11 @@ services:
       - "8001:8001"
 
     environment:
+      PROCESSOR_TOKEN: "${PROCESSOR_TOKEN:?PROCESSOR_TOKEN must be set}"
       RABBITMQ_URL: amqp://photo:photo@rabbitmq:5672/
       POSTGRES_URL: postgres://photo:photo@postgres:5432/photo_editor?sslmode=disable
       REDIS_ADDR: redis:6379
+      MAX_TASK_MESSAGE_SIZE: *max-task-message-size
 
     depends_on:
       rabbitmq:
@@ -52,6 +57,7 @@ services:
       - "127.0.0.1:9091:9091"
 
     environment:
+      PROCESSOR_TOKEN: "${PROCESSOR_TOKEN:?PROCESSOR_TOKEN must be set}"
       RABBITMQ_URL: amqp://photo:photo@rabbitmq:5672/
       API_URL: http://server:8001
 

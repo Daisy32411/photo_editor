@@ -11,5 +11,11 @@ type TaskStorage interface {
 
 	Get(ctx context.Context, id string) (models.Task, error)
 
+	GetByUser(
+		ctx context.Context,
+		id string,
+		userID string,
+	) (models.Task, error)
+
 	Update(ctx context.Context, task models.Task) error
 }
